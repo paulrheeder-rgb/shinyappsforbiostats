@@ -34,6 +34,7 @@ ui <- fluidPage(
                   c("Select Columns", "Rename Columns",
                     "Filter Rows", "Arrange Rows",
                     "Mutate (if_else)", "Mutate (case_when)",
+                    "Mutate (expression)",     # ← NEW
                     "Recode Variable", "Order Columns")),
       uiOutput("operation_ui"),
       actionButton("apply_btn", "Apply", class = "btn-primary"),
@@ -128,6 +129,12 @@ server <- function(input, output, session) {
              textAreaInput("mutate_cases", "case_when logic (one per line):", rows = 5,
                            placeholder = "age > 65 ~ \"Elderly\"\nage <= 65 ~ \"Young\"")
            ),
+           "Mutate (expression)" = tagList(
+             textInput("mutate_expr_new", "New variable name:", placeholder = "invb2m"),
+             textAreaInput("mutate_expr", "Expression (using existing variables):", 
+                           rows = 4, 
+                           placeholder = "1 / b2m\nlog(weight)\nage^2\nround(egfr / 10) * 10")
+           ),
            "Recode Variable" = tagList(
              selectInput("recode_col", "Variable:", choices = cols),
              textAreaInput("recode_rules", "Rules (one per line):", rows = 5,
@@ -191,16 +198,94 @@ server <- function(input, output, session) {
       if (op == "Recode Variable" && nzchar(input$recode_rules)) {
         rules <- strsplit(trimws(input$recode_rules), "\n")[[1]]
         recode_pairs <- list()
+        na_values <- character(0)  # Collect values to turn into NA
+        
         for (r in rules) {
-          if (grepl("=", r, fixed = TRUE)) {
-            parts <- strsplit(r, "=", fixed = TRUE)[[1]]
-            from <- trimws(parts[1])
-            to <- trimws(parts[2])
-            if (to == "NA") to <- NA
-            recode_pairs[[from]] <- to
+          r <- trimws(r)
+          if (nchar(r) == 0 || !grepl("=", r, fixed = TRUE)) next
+          
+          parts <- strsplit(r, "=", fixed = TRUE)[[1]]
+          from_raw <- trimws(parts[1])
+          to_raw <- trimws(parts[2])
+          
+          # Clean from value: remove quotes if present
+          from <- gsub('^"(.*)"$|^\'(.*)\'$', '\\1', from_raw)
+          
+          # Clean to value
+          to_clean <- gsub('^"(.*)"$|^\'(.*)\'$', '\\1', to_raw)
+          
+          # Detect if user wants to map to missing
+          if (toupper(to_clean) %in% c("NA", "<NA>", "MISSING", "")) {
+            na_values <- c(na_values, from)
+          } else {
+            # Try to convert to appropriate type
+            if (is.numeric(df[[input$recode_col]])) {
+              to_num <- suppressWarnings(as.numeric(to_clean))
+              if (!is.na(to_num)) {
+                recode_pairs[[from]] <- to_num
+              } else {
+                recode_pairs[[from]] <- to_clean  # fallback to character
+              }
+            } else {
+              recode_pairs[[from]] <- to_clean
+            }
           }
         }
-        df <- df %>% mutate(!!input$recode_col := recode(as.character(.data[[input$recode_col]]), !!!recode_pairs))
+        
+        col <- input$recode_col
+        df <- df %>% mutate(
+          !!col := {
+            x <- .data[[col]]
+            # First, apply any true recodes (not to NA)
+            if (length(recode_pairs) > 0) {
+              if (is.factor(x)) {
+                x <- fct_recode(x, !!!recode_pairs)
+              } else {
+                x <- recode(x, !!!recode_pairs, .default = x)
+              }
+            }
+            # Then, turn specified values into true NA
+            if (length(na_values) > 0) {
+              na_vals_parsed <- suppressWarnings(as.numeric(na_values))
+              # If any are valid numbers, use na_if with numbers; else treat as character
+              if (all(!is.na(na_vals_parsed))) {
+                x <- na_if(x, na_vals_parsed)  # vectorized
+              } else {
+                x <- na_if(as.character(x), na_values)
+              }
+            }                                                                                                                                          
+            x
+          }
+        )
+      }
+      if (op == "Mutate (expression)" && 
+          nzchar(input$mutate_expr_new) && 
+          nzchar(input$mutate_expr)) {
+        
+        new_var <- trimws(input$mutate_expr_new)
+        expr_text <- trimws(input$mutate_expr)
+        
+        # Basic safety: prevent overwriting existing columns unless intentional
+        if (new_var %in% names(df)) {
+          confirm <- showModal(modalDialog(
+            title = "Column exists",
+            paste0("Variable '", new_var, "' already exists. Overwrite?"),
+            footer = tagList(
+              modalButton("Cancel"),
+              actionButton("overwrite_confirm", "Overwrite", class = "btn-warning")
+            )
+          ))
+          # We'll handle confirmation separately below
+          return()
+        }
+        
+        # Parse and apply the expression
+        expr <- try(rlang::parse_expr(expr_text), silent = TRUE)
+        if (inherits(expr, "try-error")) {
+          showNotification("Invalid R expression", type = "error")
+        } else {
+          df <- df %>% mutate(!!new_var := !!expr)
+        }
       }
       if (op == "Order Columns" && !is.null(input$order_cols)) {
         df <- df %>% select(all_of(input$order_cols))
@@ -211,6 +296,22 @@ server <- function(input, output, session) {
     })
   })
   
+  # Handle overwrite confirmation for Mutate (expression)
+  observeEvent(input$overwrite_confirm, {
+    req(input$mutate_expr_new, input$mutate_expr)
+    new_var <- trimws(input$mutate_expr_new)
+    expr_text <- trimws(input$mutate_expr)
+    
+    expr <- try(rlang::parse_expr(expr_text), silent = TRUE)
+    if (inherits(expr, "try-error")) {
+      showNotification("Invalid R expression", type = "error")
+    } else {
+      df <- rv$edited %>% mutate(!!new_var := !!expr)
+      rv$edited <- df
+      showNotification(paste("Created/overwritten variable:", new_var), type = "message")
+    }
+    removeModal()
+  })
   # ---- 4. Editable Preview + FIXED CELL EDIT ----
   output$preview <- renderDT({
     req(rv$edited)
@@ -285,7 +386,10 @@ server <- function(input, output, session) {
     dict <- data.frame(
       Variable = names(df),
       Class = sapply(df, function(x) paste(class(x), collapse = ", ")),
-      Label = sapply(df, function(x) { l <- var_label(x); if (is.null(l)) "" else l }),
+      Label = sapply(df, function(x) {
+        l <- attr(x, "label")
+        if (is.null(l) || length(l) == 0) "" else paste(l, collapse = "; ")
+      }),
       Levels = sapply(df, function(x) {
         if (is.factor(x)) paste(levels(x), collapse = "; ") else ""
       }),

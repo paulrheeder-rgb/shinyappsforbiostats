@@ -57,7 +57,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       fileInput("datafile", "Dataset", accept = c(".xlsx",".xls",".RData",".dta")),
-      fileInput("dictfile", "Dictionary", accept = c(".xlsx",".xls",".RData",".dta")),
+      fileInput("dictfile", "Dictionary:varname,type,label,levels,level_labels", accept = c(".xlsx",".xls",".RData",".dta")),
       actionButton("apply", "Apply Dictionary", class = "btn-primary"),
       hr(),
       textInput("save_name", "Base name (no extension)", "cleaned_data"),

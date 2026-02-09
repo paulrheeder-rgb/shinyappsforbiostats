@@ -1,6 +1,6 @@
 # ============================================================
-  # Missing Value Manager – Density Plots + Unified Save (Full App)
-  # ============================================================
+# Missing Value Manager – Density Plots + Unified Save (Updated)
+# ============================================================
 
 library(shiny)
 library(readxl)
@@ -16,6 +16,7 @@ library(gridExtra)
 library(stringr)
 library(purrr)
 library(tibble)
+library(zip)
 conflicts_prefer(dplyr::filter)
 
 # ============================================================
@@ -51,14 +52,12 @@ ui <- fluidPage(
       actionButton("impute_mice", "Run MICE Imputation"),
       hr(),
       
-      h4("5. Save Dataset"),
-      selectInput("save_type", "Dataset to save:",
-                  choices = c("Cleaned (extreme values replaced)" = "cleaned",
-                              "Imputed (all MICE datasets)" = "imputed")),
+      h4("5. Download Dataset"),
       textInput("save_name", "Base filename (no extension):", value = "dataset"),
-      actionButton("save_dataset", "Save Dataset"),
+      downloadButton("download_cleaned", "Download Cleaned (.RData)", class = "btn-primary"),
+      downloadButton("download_dict", "Download Dictionary (.xlsx)", class = "btn-success"),
+      downloadButton("download_imputed", "Download Imputed mids (.rds)", class = "btn-info"),
       hr(),
-      
       verbatimTextOutput("save_msg")
     ),
     
@@ -126,48 +125,32 @@ server <- function(input, output, session) {
   })
   
   # ---- 2. ID column selector ----
-  observe({
-    req(df())
-    updateSelectInput(session, "id_column", choices = names(df()))
-  })
+  observe({ req(df()); updateSelectInput(session, "id_column", choices = names(df())) })
   
   # ---- 3. Hi-Lo table ----
   hilo_df <- reactiveVal()
   observeEvent(input$show_hilo, {
     req(df())
     n <- max(1, input$hilo_n)
-    
     hilo_fun <- function(x, n) {
+      if (inherits(x, "labelled")) x <- haven::zap_labels(x)
+      x <- as.numeric(x)
       x <- x[!is.na(x)]
       if (length(x) == 0) return(tibble(top = NA_real_, bottom = NA_real_))
-      tibble(
-        top    = sort(x, decreasing = TRUE)[seq_len(min(n, length(x)))],
-        bottom = sort(x)[seq_len(min(n, length(x)))]
-      )
+      tibble(top = sort(x, decreasing = TRUE)[seq_len(min(n, length(x)))],
+             bottom = sort(x)[seq_len(min(n, length(x)))])
     }
-    
-    df_num <- df() %>%
-      select(where(is.numeric)) %>%
-      select(where(~ length(unique(na.omit(.x))) > 6))
-    
+    df_num <- df() %>% select(where(is.numeric) | where(haven::is.labelled))
     if (ncol(df_num) == 0) {
-      showNotification("No numeric variables with >6 unique values found.", type = "warning")
-      hilo_df(NULL)
-      return()
+      showNotification("No numeric variables found.", type = "warning")
+      hilo_df(NULL); return()
     }
-    
-    res <- df_num %>%
-      map_dfr(hilo_fun, n = n, .id = "variable") %>%
+    res <- df_num %>% map_dfr(hilo_fun, n = n, .id = "variable") %>%
       pivot_longer(-variable, names_to = "type", values_to = "value") %>%
       arrange(variable, desc(type), desc(value))
-    
     hilo_df(as.data.frame(res))
   })
-  
-  output$hilo_table <- renderDT({
-    req(hilo_df())
-    datatable(hilo_df(), options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE)
-  })
+  output$hilo_table <- renderDT({ req(hilo_df()); datatable(hilo_df(), options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE) })
   
   # ---- 4. Replace extreme values ----
   observeEvent(input$replace_extreme, {
@@ -175,15 +158,9 @@ server <- function(input, output, session) {
     extreme_vals <- as.numeric(str_split(trimws(input$extreme_values), ",")[[1]])
     extreme_vals <- extreme_vals[!is.na(extreme_vals)]
     if (length(extreme_vals) == 0) return()
-    
     df_val <- df()
-    cols <- if (input$exclude_id && input$id_column %in% names(df_val))
-      setdiff(names(df_val), input$id_column) else names(df_val)
-    
-    df_val[cols] <- lapply(df_val[cols], function(col) {
-      col[col %in% extreme_vals] <- NA
-      col
-    })
+    cols <- if (input$exclude_id && input$id_column %in% names(df_val)) setdiff(names(df_val), input$id_column) else names(df_val)
+    df_val[cols] <- lapply(df_val[cols], function(col) { col[col %in% extreme_vals] <- NA; col })
     df(df_val)
   })
   
@@ -197,7 +174,6 @@ server <- function(input, output, session) {
     )
     datatable(miss, options = list(pageLength = 10))
   })
-  
   output$vis_miss_plot   <- renderPlot({ req(df()); vis_miss(df()) })
   output$miss_upset_plot <- renderPlot({ req(df()); gg_miss_upset(df()) })
   
@@ -205,49 +181,20 @@ server <- function(input, output, session) {
   observeEvent(input$impute_mice, {
     req(df())
     df_val <- df() %>% as.data.frame()
-    
-    # --- NEW: convert labelled variables ---
-    labelled_vars <- names(df_val)[sapply(df_val, function(x) inherits(x, "labelled"))]
-    if(length(labelled_vars) > 0) {
-      warning(paste("Labelled variables detected and converted:", paste(labelled_vars, collapse = ", ")))
-      for(v in labelled_vars) {
-        # numeric or integer -> numeric
-        if(is.numeric(df_val[[v]]) || is.integer(df_val[[v]])) {
-          df_val[[v]] <- as.numeric(df_val[[v]])
-        } else {
-          # otherwise -> factor
-          df_val[[v]] <- as_factor(df_val[[v]])
-        }
-      }
-    }
-    
-    # --- Existing method assignment ---
     meth <- make.method(df_val)
     factor_vars <- names(df_val)[sapply(df_val, is.factor)]
-    
     for (v in factor_vars) {
       nlev <- nlevels(df_val[[v]])
-      if (nlev == 2) {
-        # Convert binary factor to 0/1 numeric for logreg
-        df_val[[v]] <- as.numeric(df_val[[v]]) - 1
-        meth[v] <- "logreg"
-      } else if (nlev > 2) {
-        if (input$use_polr && is.ordered(df_val[[v]])) meth[v] <- "polr"
-        else                                           meth[v] <- "polyreg"
-      }
+      if (nlev == 2) { df_val[[v]] <- as.numeric(df_val[[v]]) - 1; meth[v] <- "logreg" }
+      else if (nlev > 2) { if (input$use_polr && is.ordered(df_val[[v]])) meth[v] <- "polr" else meth[v] <- "polyreg" }
     }
-    
     numeric_vars <- names(df_val)[sapply(df_val, is.numeric)]
     if(length(numeric_vars) > 0) meth[numeric_vars] <- "pmm"
-    
-    # --- Run MICE ---
     withProgress(message = "Running MICE ...", {
       set.seed(123)
-      imp <- mice(df_val, method = meth, m = 5, maxit = 50,
-                  printFlag = FALSE, seed = 42)
+      imp <- mice(df_val, method = meth, m = 5, maxit = 50, printFlag = FALSE, seed = 42)
     })
-    
-    imp_obj(imp) # store full mids object
+    imp_obj(imp)
     imputed_df(lapply(1:imp$m, function(i) complete(imp, i)))
   })
   
@@ -308,7 +255,6 @@ server <- function(input, output, session) {
         )
       ) %>% drop_na(value)
       
-      
       if (nrow(dfc) == 0) next
       
       p <- ggplot(dfc, aes(x = value, color = type, fill = type)) +
@@ -352,22 +298,25 @@ server <- function(input, output, session) {
     paste(vars[start:end], collapse = " | ")
   })
   
-  # ---- 12. Unified Save ----
-  observeEvent(input$save_dataset, {
-    req(df())
-    
-    save_dir <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/data"
-    if (!dir.exists(save_dir)) dir.create(save_dir, recursive = TRUE)
-    
-    base <- trimws(input$save_name)
-    if (base == "") base <- "dataset"
-    base <- make.names(base)
-    
-    if (input$save_type == "cleaned") {
+  # ---- 12. Unified Save with downloadHandler ----
+  output$download_cleaned <- downloadHandler(
+    filename = function() {
+      paste0(make.names(trimws(input$save_name)), ".RData")
+    },
+    content = function(file) {
+      req(df())
       ds <- df()
-      rdata_path <- file.path(save_dir, paste0(base, ".RData"))
-      save(ds, file = rdata_path)
-      
+      save(ds, file = file)
+    }
+  )
+  
+  output$download_dict <- downloadHandler(
+    filename = function() {
+      paste0(make.names(trimws(input$save_name)), "_dictionary.xlsx")
+    },
+    content = function(file) {
+      req(df())
+      ds <- df()
       dict <- data.frame(
         Variable = names(ds),
         Class = sapply(ds, function(x) paste(class(x), collapse = ", ")),
@@ -377,31 +326,23 @@ server <- function(input, output, session) {
         }),
         stringsAsFactors = FALSE
       )
-      dict_path <- file.path(save_dir, paste0(base, "_dictionary.xlsx"))
-      writexl::write_xlsx(dict, dict_path)
-      
-    } else if (input$save_type == "imputed") {
-      req(imp_obj())
-      ds <- imp_obj()
-      rdata_path <- file.path(save_dir, paste0(base, "_mids.rds"))
-      save(ds, file = rdata_path)
-      dict_path <- NA
-    } else {
-      showNotification("Invalid save type.", type = "error")
-      return()
+      writexl::write_xlsx(dict, file)
     }
-    
-    output$save_msg <- renderText({
-      paste0("Saved to:\n",
-             normalizePath(rdata_path, winslash = "/"),
-             if (!is.na(dict_path)) paste0("\n", normalizePath(dict_path, winslash = "/")) else "")
-    })
-    
-    showNotification("Dataset saved to /data folder!", type = "message")
+  )
+  
+  output$download_imputed <- downloadHandler(
+    filename = function() {
+      paste0(make.names(trimws(input$save_name)), "_mids.rds")
+    },
+    content = function(file) {
+      req(imp_obj())
+      saveRDS(imp_obj(), file)   # saves the full mids object with all imputations
+    }
+  )
+  
+  output$save_msg <- renderText({
+    "Use the buttons above to download the cleaned dataset, dictionary, or full mids object."
   })
 }
 
 shinyApp(ui, server)
-
-
-

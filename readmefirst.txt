@@ -1,3 +1,5 @@
+![AppsForBiostats Logo](https://github.com/paulrheeder-rgb/shinyappsforbiostats/blob/main/images/ShinyAppsLogo3.jpg)
+
 USING SHINY APPS FOR BIOSTATISTICS
 =================================
 
@@ -5,6 +7,7 @@ STEP 1: Install R
 https://cran.r-project.org
 
 STEP 2: Install RStudio
+
 https://posit.co/download/rstudio-desktop/
 
 STEP 3: Find zipped folder
@@ -59,6 +62,27 @@ install.packages(c(
   "emmeans",
   "marginaleffects"
 ))
+
+STEP 6: Run an app
+------------------
+Example (Boxplots):
+
+shiny::runApp("Biostats_Shiny_Apps/08_Boxplots")
+
+If that does not work, use the full path, e.g.:
+
+shiny::runApp(
+  "C:/Users/YOURNAME/Documents/Biostats_Shiny_Apps/08_Boxplots"
+)
+STEP 4: Open RStudio
+
+STEP 5: Install required packages (run once)
+-----------------------------------------------
+
+* you need to have the same packages and versions used in the Apps
+so On another machine:
+In RStudio run 
+renv::restore() → renv downloads the right versions of packages from CRAN (or other sources) using the lockfile.
 
 STEP 6: Run an app
 ------------------

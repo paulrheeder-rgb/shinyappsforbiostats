@@ -5,8 +5,10 @@ library(labelled)
 library(dplyr)
 library(DT)
 library(writexl)
+library(fs)
 
-# ---- (your apply_dictionary stays exactly the same) ----
+
+# ---- APPLY DICTIONARY (UNCHANGED) --------------------------
 apply_dictionary <- function(df, dict) {
   dict <- dict %>%
     mutate(across(everything(), ~trimws(as.character(.x)))) %>%
@@ -38,7 +40,8 @@ apply_dictionary <- function(df, dict) {
       if (all(!is.na(df_num))) df[[var]] <- df_num
       df[[var]] <- factor(df[[var]], levels = codes_num, labels = labels)
     } else {
-      df[[var]] <- factor(trimws(as.character(df[[var]])), levels = codes, labels = labels)
+      df[[var]] <- factor(trimws(as.character(df[[var]])),
+                          levels = codes, labels = labels)
     }
   }
   
@@ -54,16 +57,34 @@ apply_dictionary <- function(df, dict) {
 # ---- UI ----------------------------------------------------
 ui <- fluidPage(
   titlePanel("Apply Data Dictionary (Excel / RData / Stata)"),
+  
   sidebarLayout(
     sidebarPanel(
-      fileInput("datafile", "Dataset", accept = c(".xlsx",".xls",".RData",".dta")),
-      fileInput("dictfile", "Dictionary:varname,type,label,levels,level_labels", accept = c(".xlsx",".xls",".RData",".dta")),
+      fileInput("datafile", "Dataset",
+                accept = c(".xlsx", ".xls", ".RData", ".dta")),
+      
+      fileInput("dictfile",
+                "Dictionary: varname, type, label, levels, level_labels",
+                accept = c(".xlsx", ".xls", ".RData", ".dta")),
+      
       actionButton("apply", "Apply Dictionary", class = "btn-primary"),
       hr(),
+      
       textInput("save_name", "Base name (no extension)", "cleaned_data"),
-      actionButton("save_files", "Save Files", class = "btn-success"),
-      verbatimTextOutput("save_msg")
+      
+      downloadButton(
+        "download_rdata",
+        "Download cleaned data (.RData)",
+        class = "btn-success"
+      ),
+      
+      downloadButton(
+        "download_dict",
+        "Download dictionary (.xlsx)",
+        class = "btn-success"
+      )
     ),
+    
     mainPanel(
       h4("Cleaned data preview"),
       DTOutput("table"),
@@ -76,44 +97,57 @@ ui <- fluidPage(
 
 # ---- SERVER ------------------------------------------------
 server <- function(input, output, session) {
-  save_folder <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/data"
   
+  ## ---- LOAD DATA ------------------------------------------
   dataset <- reactive({
     req(input$datafile)
-    ext <- tools::file_ext(input$datafile$name)
+    ext  <- tools::file_ext(input$datafile$name)
     path <- input$datafile$datapath
-    if (ext %in% c("xlsx","xls")) read_excel(path)
-    else if (ext == "RData") { e <- new.env(); load(path, envir = e); as.data.frame(e[[ls(e)[1]]]) }
-    else if (ext == "dta") as.data.frame(read_dta(path))
-    else stop("Unsupported")
+    
+    if (ext %in% c("xlsx","xls")) {
+      read_excel(path)
+    } else if (ext == "RData") {
+      e <- new.env()
+      load(path, envir = e)
+      as.data.frame(e[[ls(e)[1]]])
+    } else if (ext == "dta") {
+      as.data.frame(read_dta(path))
+    } else stop("Unsupported file type")
   })
   
   dictionary <- reactive({
     req(input$dictfile)
-    ext <- tools::file_ext(input$dictfile$name)
+    ext  <- tools::file_ext(input$dictfile$name)
     path <- input$dictfile$datapath
-    if (ext %in% c("xlsx","xls")) read_excel(path)
-    else if (ext == "RData") { e <- new.env(); load(path, envir = e); as.data.frame(e[[ls(e)[1]]]) }
-    else if (ext == "dta") as.data.frame(read_dta(path))
-    else stop("Unsupported")
+    
+    if (ext %in% c("xlsx","xls")) {
+      read_excel(path)
+    } else if (ext == "RData") {
+      e <- new.env()
+      load(path, envir = e)
+      as.data.frame(e[[ls(e)[1]]])
+    } else if (ext == "dta") {
+      as.data.frame(read_dta(path))
+    } else stop("Unsupported file type")
   })
   
+  ## ---- APPLY DICTIONARY -----------------------------------
   modified <- eventReactive(input$apply, {
     apply_dictionary(dataset(), dictionary())
   })
   
+  ## ---- PREVIEW --------------------------------------------
   output$table <- renderDT({
     req(modified())
     datatable(modified(), options = list(scrollX = TRUE))
   })
   
-  ## ---- CLEAN SUMMARY (the only part you needed) ----
   make_var_summary <- function(df) {
     data.frame(
       Variable = names(df),
       `Data-type` = sapply(df, function(col) {
-        cls <- class(col)
-        cls <- setdiff(cls, c("haven_labelled", "labelled", "vctrs_vctr"))
+        cls <- setdiff(class(col),
+                       c("haven_labelled","labelled","vctrs_vctr"))
         if (length(cls) == 0) "character"
         else paste(cls, collapse = ", ")
       }),
@@ -128,34 +162,39 @@ server <- function(input, output, session) {
   
   output$labels <- renderDT({
     req(modified())
-    datatable(
-      make_var_summary(modified()),
-      options = list(scrollX = TRUE, pageLength = 15),
-      rownames = FALSE
-    )
+    datatable(make_var_summary(modified()),
+              options = list(scrollX = TRUE, pageLength = 15),
+              rownames = FALSE)
   })
   
-  ## ---- SAVE ------------------------------------------------
-  observeEvent(input$save_files, {
-    req(modified())
-    dir <- normalizePath(save_folder)
-    base <- input$save_name
-    df <- modified()
-    
-    rdata_path <- file.path(dir, paste0(base, ".RData"))
-    save(df, file = rdata_path)
-    
-    dict <- make_var_summary(df)
-    dict$Levels <- sapply(df, function(col) {
-      if (is.factor(col)) paste(levels(col), collapse = "; ") else ""
-    })
-    dict_path <- file.path(dir, paste0(base, "_dictionary.xlsx"))
-    writexl::write_xlsx(dict, dict_path)
-    
-    output$save_msg <- renderText(paste0(
-      "Files saved to:\n", rdata_path, "\n", dict_path
-    ))
-  })
+  output$download_rdata <- downloadHandler(
+    filename = function() {
+      paste0(input$save_name, ".RData")
+    },
+    content = function(file) {
+      req(modified())
+      df <- modified()
+      save(df, file = file)
+    }
+  )
+  output$download_dict <- downloadHandler(
+    filename = function() {
+      paste0(input$save_name, "_dictionary.xlsx")
+    },
+    content = function(file) {
+      req(modified())
+      df <- modified()
+      
+      dict <- make_var_summary(df)
+      dict$Levels <- sapply(df, function(col) {
+        if (is.factor(col)) paste(levels(col), collapse = "; ") else ""
+      })
+      
+      writexl::write_xlsx(dict, file)
+    }
+  )
+  
 }
 
 shinyApp(ui, server)
+

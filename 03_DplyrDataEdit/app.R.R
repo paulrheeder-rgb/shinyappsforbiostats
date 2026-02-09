@@ -1,5 +1,5 @@
 # ============================================================
-# App2 Dplyr DataEdit (Fixed Save Folder + FULL CELL EDIT SUPPORT)
+# App2 Dplyr DataEdit (Fully functional + download/save + forcats panel)
 # ============================================================
 library(shiny)
 library(readxl)
@@ -7,9 +7,8 @@ library(haven)
 library(dplyr)
 library(writexl)
 library(DT)
-library(forcats)  # ← ADDED
+library(forcats)
 conflicted::conflicts_prefer(dplyr::filter)
-
 # ---- UI ----
 ui <- fluidPage(
   tags$head(
@@ -34,53 +33,50 @@ ui <- fluidPage(
                   c("Select Columns", "Rename Columns",
                     "Filter Rows", "Arrange Rows",
                     "Mutate (if_else)", "Mutate (case_when)",
-                    "Mutate (expression)",     # ← NEW
-                    "Recode Variable", "Order Columns")),
+                    "Mutate (expression)", "Recode Variable", "Order Columns")),
       uiOutput("operation_ui"),
       actionButton("apply_btn", "Apply", class = "btn-primary"),
       hr(),
       
-      h4("3. Table Display"),
-      numericInput("n_rows", "Rows per page:", value = 50, min = 10, max = 1000, step = 50),
+      # ---- NEW: Forcats Panel ABOVE Save Data ----
+      uiOutput("forcats_ui"),
       hr(),
       
-      h4("4. Save Data"),
+      h4("3. Save Data"),
       textInput("save_name", "File name (without .RData):", "edited_data"),
-      actionButton("save_btn", "Save Files", class = "btn-success"),
-      textOutput("save_msg"),
+      downloadButton("download_rdata", "Download RData"),
+      downloadButton("download_dict", "Download Dictionary"),
       hr(),
+      
       actionButton("reset_btn", "Reset to Original")
-    ),
+    ),   # <-- closes sidebarPanel
     
     mainPanel(
       h4("Editable Data Preview"),
       DTOutput("preview")
     )
-  )
+  )      # <-- closes sidebarLayout
 )
+
 
 # ---- SERVER ----
 server <- function(input, output, session) {
   rv <- reactiveValues(data = NULL, edited = NULL)
-  save_folder <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/data"
   
   # Update env dataset choices
   observe({
     updateSelectInput(session, "env_dataset", choices = ls(envir = .GlobalEnv))
   })
   
-  # ---- 1. Load Data ----
+  # ---- Load Data ----
   observeEvent(input$file, {
     req(input$file)
     ext <- tools::file_ext(input$file$name)
     df <- switch(ext,
                  "xlsx" = , "xls" = read_excel(input$file$datapath),
                  "dta" = read_dta(input$file$datapath),
-                 "RData" = , "rds" = {
-                   e <- new.env(); load(input$file$datapath, envir = e); get(ls(e)[1], e)
-                 },
+                 "RData" = , "rds" = { e <- new.env(); load(input$file$datapath, envir = e); get(ls(e)[1], e) },
                  stop("Unsupported file type"))
-    
     rv$data <- df
     rv$edited <- df
     showNotification("Data loaded successfully", type = "message")
@@ -98,7 +94,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # ---- 2. Dynamic Operation UI ----
+  # ---- Dynamic Operation UI ----
   output$operation_ui <- renderUI({
     req(rv$edited)
     df <- rv$edited
@@ -133,7 +129,7 @@ server <- function(input, output, session) {
              textInput("mutate_expr_new", "New variable name:", placeholder = "invb2m"),
              textAreaInput("mutate_expr", "Expression (using existing variables):", 
                            rows = 4, 
-                           placeholder = "1 / b2m\nlog(weight)\nage^2\nround(egfr / 10) * 10")
+                           placeholder = "1 / b2m\nlog(weight)\nage^2")
            ),
            "Recode Variable" = tagList(
              selectInput("recode_col", "Variable:", choices = cols),
@@ -143,21 +139,17 @@ server <- function(input, output, session) {
            "Order Columns" = tagList(
              tags$div(tags$ul(id = "col_list", class = "sortable-list",
                               lapply(cols, function(cn) tags$li(class = "col-item", `data-col` = cn, cn)))),
-             tags$style(HTML("
-               .sortable-list { list-style: none; padding-left: 0; margin: 0 0 8px 0; }
-               .sortable-list li { padding: 8px 12px; margin-bottom: 6px;
-                                   background: #fff; border: 1px solid #ddd;
-                                   border-radius: 4px; cursor: move; }
-             ")),
+             tags$style(HTML(" .sortable-list { list-style: none; padding-left: 0; margin: 0 0 8px 0; }
+                               .sortable-list li { padding: 8px 12px; margin-bottom: 6px;
+                               background: #fff; border: 1px solid #ddd;
+                               border-radius: 4px; cursor: move; }")),
              tags$script(HTML("
                $(function(){
                  var $list = $('#col_list');
                  $list.sortable({
                    update: function(){
                      var order = [];
-                     $list.find('li').each(function(){
-                       order.push($(this).attr('data-col'));
-                     });
+                     $list.find('li').each(function(){ order.push($(this).attr('data-col')); });
                      Shiny.setInputValue('order_cols', order, {priority: 'event'});
                    }
                  });
@@ -167,7 +159,7 @@ server <- function(input, output, session) {
     )
   })
   
-  # ---- 3. Apply Operation ----
+  # ---- Apply Operation ----
   observeEvent(input$apply_btn, {
     req(rv$edited)
     df <- rv$edited
@@ -178,16 +170,16 @@ server <- function(input, output, session) {
       if (op == "Rename Columns" && nzchar(input$rename_to))
         df <- df %>% rename(!!input$rename_to := all_of(input$rename_from))
       if (op == "Filter Rows" && nzchar(input$filter_val)) {
-        col <- input$filter_col
-        op_sym <- input$filter_op
         val <- input$filter_val
+        col <- input$filter_col
         if (is.numeric(df[[col]])) val <- as.numeric(val)
-        expr <- paste0(".data[[\"", col, "\"]] ", op_sym, " ", deparse(val))
+        expr <- paste0(".data[['", col, "']] ", input$filter_op, " ", deparse(val))
         df <- df %>% filter(!!rlang::parse_expr(expr))
       }
       if (op == "Arrange Rows") df <- df %>% arrange(.data[[input$arrange_col]])
+      
       if (op == "Mutate (if_else)" && nzchar(input$mutate_new)) {
-        cond <- paste0(".data[[\"", input$mutate_col, "\"]]", input$mutate_cond)
+        cond <- paste0(".data[['", input$mutate_col, "']]", input$mutate_cond)
         df <- df %>% mutate(!!input$mutate_new := if_else(!!rlang::parse_expr(cond),
                                                           input$mutate_true, input$mutate_false))
       }
@@ -195,40 +187,30 @@ server <- function(input, output, session) {
         expr <- paste0("case_when(", paste(input$mutate_cases, collapse = ", "), ")")
         df <- df %>% mutate(!!input$mutate_new2 := !!rlang::parse_expr(expr))
       }
+      if (op == "Mutate (expression)" && nzchar(input$mutate_expr_new) && nzchar(input$mutate_expr)) {
+        expr <- try(rlang::parse_expr(input$mutate_expr), silent = TRUE)
+        if (!inherits(expr, "try-error")) {
+          df <- df %>% mutate(!!input$mutate_expr_new := !!expr)
+        }
+      }
       if (op == "Recode Variable" && nzchar(input$recode_rules)) {
+        # Split rules entered by user
         rules <- strsplit(trimws(input$recode_rules), "\n")[[1]]
-        recode_pairs <- list()
-        na_values <- character(0)  # Collect values to turn into NA
+        recode_list <- list()
+        na_values <- character(0)
         
         for (r in rules) {
           r <- trimws(r)
-          if (nchar(r) == 0 || !grepl("=", r, fixed = TRUE)) next
+          if (nchar(r) == 0 || !grepl("=", r)) next
           
           parts <- strsplit(r, "=", fixed = TRUE)[[1]]
-          from_raw <- trimws(parts[1])
-          to_raw <- trimws(parts[2])
+          from <- gsub('[\'",]', '', trimws(parts[1]))  # sanitize input
+          to   <- gsub('[\'",]', '', trimws(parts[2]))  # sanitize input
           
-          # Clean from value: remove quotes if present
-          from <- gsub('^"(.*)"$|^\'(.*)\'$', '\\1', from_raw)
-          
-          # Clean to value
-          to_clean <- gsub('^"(.*)"$|^\'(.*)\'$', '\\1', to_raw)
-          
-          # Detect if user wants to map to missing
-          if (toupper(to_clean) %in% c("NA", "<NA>", "MISSING", "")) {
+          if (toupper(to) %in% c("NA","<NA>","MISSING","")) {
             na_values <- c(na_values, from)
           } else {
-            # Try to convert to appropriate type
-            if (is.numeric(df[[input$recode_col]])) {
-              to_num <- suppressWarnings(as.numeric(to_clean))
-              if (!is.na(to_num)) {
-                recode_pairs[[from]] <- to_num
-              } else {
-                recode_pairs[[from]] <- to_clean  # fallback to character
-              }
-            } else {
-              recode_pairs[[from]] <- to_clean
-            }
+            recode_list[[from]] <- to
           }
         }
         
@@ -236,173 +218,175 @@ server <- function(input, output, session) {
         df <- df %>% mutate(
           !!col := {
             x <- .data[[col]]
-            # First, apply any true recodes (not to NA)
-            if (length(recode_pairs) > 0) {
+            
+            if (length(recode_list) > 0) {
               if (is.factor(x)) {
-                x <- fct_recode(x, !!!recode_pairs)
+                # fct_recode expects new = old, so flip mapping
+                x <- forcats::fct_recode(x, !!!setNames(unname(recode_list), names(recode_list)))
               } else {
-                x <- recode(x, !!!recode_pairs, .default = x)
+                x <- dplyr::recode(as.character(x), !!!recode_list, .default = x)
               }
             }
-            # Then, turn specified values into true NA
+            
             if (length(na_values) > 0) {
               na_vals_parsed <- suppressWarnings(as.numeric(na_values))
-              # If any are valid numbers, use na_if with numbers; else treat as character
               if (all(!is.na(na_vals_parsed))) {
-                x <- na_if(x, na_vals_parsed)  # vectorized
+                x <- na_if(x, na_vals_parsed)
               } else {
                 x <- na_if(as.character(x), na_values)
               }
-            }                                                                                                                                          
+            }
+            
             x
           }
         )
       }
-      if (op == "Mutate (expression)" && 
-          nzchar(input$mutate_expr_new) && 
-          nzchar(input$mutate_expr)) {
-        
-        new_var <- trimws(input$mutate_expr_new)
-        expr_text <- trimws(input$mutate_expr)
-        
-        # Basic safety: prevent overwriting existing columns unless intentional
-        if (new_var %in% names(df)) {
-          confirm <- showModal(modalDialog(
-            title = "Column exists",
-            paste0("Variable '", new_var, "' already exists. Overwrite?"),
-            footer = tagList(
-              modalButton("Cancel"),
-              actionButton("overwrite_confirm", "Overwrite", class = "btn-warning")
-            )
-          ))
-          # We'll handle confirmation separately below
-          return()
-        }
-        
-        # Parse and apply the expression
-        expr <- try(rlang::parse_expr(expr_text), silent = TRUE)
-        if (inherits(expr, "try-error")) {
-          showNotification("Invalid R expression", type = "error")
-        } else {
-          df <- df %>% mutate(!!new_var := !!expr)
-        }
-      }
+      
       if (op == "Order Columns" && !is.null(input$order_cols)) {
         df <- df %>% select(all_of(input$order_cols))
       }
       rv$edited <- df
-    }, error = function(e) {
-      showNotification(paste("Error:", e$message), type = "error")
-    })
+    }, error = function(e) showNotification(paste("Error:", e$message), type = "error"))
   })
   
-  # Handle overwrite confirmation for Mutate (expression)
-  observeEvent(input$overwrite_confirm, {
-    req(input$mutate_expr_new, input$mutate_expr)
-    new_var <- trimws(input$mutate_expr_new)
-    expr_text <- trimws(input$mutate_expr)
-    
-    expr <- try(rlang::parse_expr(expr_text), silent = TRUE)
-    if (inherits(expr, "try-error")) {
-      showNotification("Invalid R expression", type = "error")
-    } else {
-      df <- rv$edited %>% mutate(!!new_var := !!expr)
-      rv$edited <- df
-      showNotification(paste("Created/overwritten variable:", new_var), type = "message")
-    }
-    removeModal()
-  })
-  # ---- 4. Editable Preview + FIXED CELL EDIT ----
+  # ---- Editable DT ----
   output$preview <- renderDT({
     req(rv$edited)
-    datatable(rv$edited, editable = list(target = "cell"), 
-              options = list(pageLength = input$n_rows, scrollX = TRUE))
+    datatable(rv$edited, editable = list(target="cell"), options=list(scrollX=TRUE, pageLength=10))
   })
   
-  # FIXED CELL EDIT: Supports factor (gender), numeric (age), character
+  # ---- FORCATS PANEL ----
+  output$forcats_ui <- renderUI({
+    req(rv$edited)
+    tagList(
+      hr(),
+      h4("Create forcats-based factors"),
+      
+      # 1. fct_infreq
+      selectInput("freq_var", "Variable → fct_infreq (ordered by frequency)", 
+                  choices = names(rv$edited)),
+      actionButton("make_infreq", "Create fct_infreq", class = "btn-primary", width = "100%"),
+      
+      hr(),
+      
+      # 2. NA → Missing
+      selectInput("na_var", "Variable → NA → Missing", 
+                  choices = names(rv$edited)),
+      actionButton("make_na", "Create NA → Missing", class = "btn-primary", width = "100%"),
+      
+      hr(),
+      
+      # 3. Lump Top N
+      selectInput("lump_var", "Variable → Lump top N", 
+                  choices = names(rv$edited)),
+      numericInput("lump_n", "Keep top N", value = 5, min = 1),
+      textInput("lump_other", "Other level name", value = "Other"),
+      actionButton("make_lump", "Create Lump Top N", class = "btn-primary", width = "100%"),
+      
+      hr(),
+      
+      # 4. Drop Unused Levels
+      selectInput("drop_var", "Variable → Drop unused levels", 
+                  choices = names(rv$edited)),
+      actionButton("make_drop", "Drop Unused Levels", class = "btn-warning", width = "100%")
+    )
+  })
+  
+  # ---- FORCATS ACTIONS ----
+  observeEvent(input$make_infreq, {
+    req(rv$edited, input$freq_var)
+    df <- rv$edited
+    new_name <- paste0(input$freq_var, "_infreq")
+    if (new_name %in% names(df)) {
+      showNotification("Column already exists.", type = "error"); return()
+    }
+    df[[new_name]] <- forcats::fct_infreq(df[[input$freq_var]])
+    attr(df[[new_name]], "label") <- paste("Frequency-ordered:", input$freq_var)
+    rv$edited <- df
+    showNotification(paste("Created:", new_name), type = "message")
+  })
+  
+  observeEvent(input$make_na, {
+    req(rv$edited, input$na_var)
+    df <- rv$edited
+    new_name <- paste0(input$na_var, "_na")
+    if (new_name %in% names(df)) {
+      showNotification("Column already exists.", type = "error"); return()
+    }
+    df[[new_name]] <- forcats::fct_explicit_na(df[[input$na_var]], na_level = "Missing")
+    attr(df[[new_name]], "label") <- paste("NA → Missing:", input$na_var)
+    rv$edited <- df
+    showNotification(paste("Created:", new_name), type = "message")
+  })
+  
+  observeEvent(input$make_lump, {
+    req(rv$edited, input$lump_var, input$lump_n)
+    df <- rv$edited
+    new_name <- paste0(input$lump_var, "_top", input$lump_n)
+    if (new_name %in% names(df)) {
+      showNotification("Column already exists.", type = "error"); return()
+    }
+    df[[new_name]] <- forcats::fct_lump_n(df[[input$lump_var]], n = input$lump_n, other_level = input$lump_other)
+    attr(df[[new_name]], "label") <- paste0("Top ", input$lump_n, " + ", input$lump_other, ": ", input$lump_var)
+    rv$edited <- df
+    showNotification(paste("Created:", new_name), type = "message")
+  })
+  
+  observeEvent(input$make_drop, {
+    req(rv$edited, input$drop_var)
+    df <- rv$edited
+    old_levels <- levels(df[[input$drop_var]])
+    df[[input$drop_var]] <- forcats::fct_drop(df[[input$drop_var]])
+    new_levels <- levels(df[[input$drop_var]])
+    
+    dropped <- setdiff(old_levels, new_levels)
+    if (length(dropped) == 0) {
+      showNotification("No unused levels to drop.", type = "message")
+    } else {
+      showNotification(paste("Dropped:", paste(dropped, collapse = ", ")), type = "message")
+    }
+    rv$edited <- df
+  })
+  
+  # ---- Fixed cell edit ----
   observeEvent(input$preview_cell_edit, {
     info <- input$preview_cell_edit
     req(rv$edited, info$row, info$col)
-    
     col_name <- names(rv$edited)[info$col]
-    old_val <- rv$edited[info$row, info$col][[1]]
-    new_val <- info$value
-    
-    # Handle empty / "NA" / whitespace → NA
-    if (is.null(new_val) || new_val == "" || tolower(trimws(new_val)) %in% c("na", "<na>")) {
-      new_val <- NA
-    } else {
-      new_val <- trimws(new_val)
-    }
-    
-    # CASE 1: Factor (e.g. gender)
-    if (is.factor(rv$edited[[col_name]])) {
-      if (is.na(new_val)) {
-        rv$edited[info$row, col_name] <- NA
-      } else {
-        current_levels <- levels(rv$edited[[col_name]])
-        if (!new_val %in% current_levels) {
-          rv$edited[[col_name]] <- fct_expand(rv$edited[[col_name]], new_val)
-        }
-        rv$edited[info$row, col_name] <- factor(new_val, levels = levels(rv$edited[[col_name]]))
-      }
-      
-      # CASE 2: Numeric (e.g. age)
-    } else if (is.numeric(rv$edited[[col_name]])) {
-      new_num <- suppressWarnings(as.numeric(new_val))
-      if (is.na(new_num) && !is.na(new_val) && new_val != "") {
-        showNotification(
-          paste("Invalid number for", col_name, "→ reverted to", old_val),
-          type = "error", duration = 5
-        )
-        return()
-      }
-      rv$edited[info$row, col_name] <- if (is.na(new_val)) NA else new_num
-      
-      # CASE 3: Character or other
-    } else {
-      rv$edited[info$row, col_name] <- as.character(new_val)
-    }
+    val <- info$value
+    if (is.null(val) || val == "" || tolower(trimws(val)) %in% c("na","<na>")) val <- NA
+    rv$edited[info$row, col_name] <- if (is.factor(rv$edited[[col_name]])) {
+      if (!val %in% levels(rv$edited[[col_name]])) rv$edited[[col_name]] <- fct_expand(rv$edited[[col_name]], val)
+      factor(val, levels = levels(rv$edited[[col_name]]))
+    } else if (is.numeric(rv$edited[[col_name]])) suppressWarnings(as.numeric(val))
+    else as.character(val)
   })
   
-  # Reset
-  observeEvent(input$reset_btn, {
-    rv$edited <- rv$data
-    showNotification("Reset to original data", type = "message")
-  })
+  # ---- Reset ----
+  observeEvent(input$reset_btn, { rv$edited <- rv$data; showNotification("Reset to original data") })
   
-  # ---- 5. Save ----
-  observeEvent(input$save_btn, {
-    req(rv$edited)
-    dir <- normalizePath(save_folder, mustWork = FALSE)
-    base <- input$save_name
-    df <- rv$edited
-    
-    # Save RData
-    rdata_path <- file.path(dir, paste0(base, ".RData"))
-    save(df, file = rdata_path)
-    
-    # Save Dictionary
-    dict <- data.frame(
-      Variable = names(df),
-      Class = sapply(df, function(x) paste(class(x), collapse = ", ")),
-      Label = sapply(df, function(x) {
-        l <- attr(x, "label")
-        if (is.null(l) || length(l) == 0) "" else paste(l, collapse = "; ")
-      }),
-      Levels = sapply(df, function(x) {
-        if (is.factor(x)) paste(levels(x), collapse = "; ") else ""
-      }),
-      stringsAsFactors = FALSE
-    )
-    dict_path <- file.path(dir, paste0(base, "_dictionary.xlsx"))
-    writexl::write_xlsx(dict, dict_path)
-    
-    output$save_msg <- renderText(paste0(
-      "Files saved:\n", rdata_path, "\n", dict_path
-    ))
-  })
+  # ---- Download Handlers ----
+  output$download_rdata <- downloadHandler(
+    filename = function() paste0(input$save_name, ".RData"),
+    content = function(file) { df <- rv$edited; save(df, file = file) }
+  )
+  
+  output$download_dict <- downloadHandler(
+    filename = function() paste0(input$save_name, "_dictionary.xlsx"),
+    content = function(file) {
+      df <- rv$edited
+      dict <- data.frame(
+        Variable = names(df),
+        Class = sapply(df, function(x) paste(class(x), collapse=", ")),
+        Label = sapply(df, function(x) { l <- attr(x, "label"); if (is.null(l)) "" else paste(l, collapse="; ") }),
+        Levels = sapply(df, function(x) if (is.factor(x)) paste(levels(x), collapse="; ") else ""),
+        stringsAsFactors = FALSE
+      )
+      writexl::write_xlsx(dict, file)
+    }
+  )
 }
 
 # ---- Launch ----
 shinyApp(ui, server)
+

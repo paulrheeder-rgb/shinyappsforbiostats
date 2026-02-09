@@ -1,5 +1,4 @@
-# REGRESSION DASHBOARD
-
+# REGRESSION DASHBOARD (UPDATED)
 
 library(shiny)
 library(tidyr)
@@ -28,6 +27,31 @@ library(api2lm)
 library(shinyFiles)
 library(readxl)
 
+# ---- Helper function for consistent interpretation ----
+interpret_effect <- function(factor, ame, pval, model_type) {
+  if (model_type == "glm") {
+    if (grepl("@", factor)) {
+      paste0("Conditional effect of ", factor,
+             ": predicted probability changes by ", ame,
+             " (p = ", pval, ").")
+    } else {
+      paste0("Average effect of ", factor,
+             ": predicted probability changes by ", ame,
+             " (p = ", pval, ").")
+    }
+  } else { # linear model
+    if (grepl("@", factor)) {
+      paste0("Conditional effect of ", factor,
+             ": outcome changes by ", ame,
+             " units (p = ", pval, ").")
+    } else {
+      paste0("Average effect of ", factor,
+             ": outcome changes by ", ame,
+             " units (p = ", pval, ").")
+    }
+  }
+}
+
 ui <- fluidPage(
   titlePanel("Regression Dashboard with DFBETAs Option"),
   
@@ -45,15 +69,19 @@ ui <- fluidPage(
                    choices = c("Linear" = "lm", "Logistic" = "glm")),
       uiOutput("yvar_ui"),
       uiOutput("xvars_ui"),
+      checkboxInput("center_numeric", "Mean‑center numeric predictors before interactions", FALSE),
+      
       textInput("interaction_terms", "Specify interaction terms (e.g., x1:x2 + x3:x4)", ""),
       actionButton("fit_model", "Fit Model"),
       hr(),
       
-      h4("Save Outputs"),
-      shinyDirButton("save_dir", "Choose Folder", "Select folder to save outputs"),
-      textInput("save_prefix", "Prefix for saved files:", "regression"),
-      actionButton("save_outputs", "Save All Outputs"),
-      textOutput("save_msg")
+      uiOutput("interaction_options"),
+      
+      
+      h4("Download Outputs"),
+      textInput("fname_base", "File name prefix:", "regression"),
+      downloadButton("download_docx", "Download Word Report", class = "btn-primary"),
+      downloadButton("download_zip", "Download Plots ZIP", class = "btn-success")
     ),
     
     mainPanel(
@@ -119,7 +147,10 @@ ui <- fluidPage(
         ),
         tabPanel("ROC Curve", plotOutput("roc_plot")),
         tabPanel("Marginal Effects", plotOutput("margins_plot")),
-        tabPanel("Marginal Effects Table", tableOutput("margins_table")),
+        tabPanel("Marginal Effects Table",
+                 tableOutput("margins_table"),
+                 uiOutput("margins_text")
+        ),
         tabPanel("Interaction Plot",
                  h4("Visualization of Specified Interaction"),
                  p("Shows the first interaction term entered in the sidebar."),
@@ -134,19 +165,21 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  # Update environment dropdown
-  observe({
-    dfs <- ls(envir = .GlobalEnv)[sapply(ls(envir = .GlobalEnv), function(x) is.data.frame(get(x, envir = .GlobalEnv)))]
-    updateSelectInput(session, "env_dataset", choices = c("None", dfs))
-  })
+  # Environment dataset dropdown
+  dfs <- ls(envir = .GlobalEnv)
+  is_df <- vapply(dfs, function(x) {
+    obj <- tryCatch(get(x, envir = .GlobalEnv), error = function(e) NULL)
+    is.data.frame(obj)
+  }, logical(1))
+  dfs <- dfs[is_df]
+  updateSelectInput(session, "env_dataset", choices = c("None", dfs))
   
-  # Dataset loading
   dataset <- reactiveVal(NULL)
   
+  # Load dataset
   observeEvent(input$file, {
     req(input$file)
     ext <- tolower(tools::file_ext(input$file$name))
-    
     df <- tryCatch({
       switch(ext,
              csv = read.csv(input$file$datapath, stringsAsFactors = TRUE),
@@ -164,7 +197,6 @@ server <- function(input, output, session) {
       showNotification(paste("Error:", e$message), type = "error")
       NULL
     })
-    
     if (is.data.frame(df)) dataset(df)
   })
   
@@ -174,7 +206,7 @@ server <- function(input, output, session) {
     if (is.data.frame(df)) dataset(df)
   })
   
-  # Data Preview
+  # Preview
   output$data_preview_table <- renderTable({ req(dataset()); head(dataset(), 10) }, rownames = TRUE)
   output$data_summary <- renderPrint({ req(dataset()); summary(dataset()) })
   
@@ -186,16 +218,47 @@ server <- function(input, output, session) {
   model_fit <- eventReactive(input$fit_model, {
     req(dataset(), input$yvar, input$xvars)
     df <- dataset()
-    formula_text <- paste(input$yvar, "~", paste(input$xvars, collapse = " + "))
-    if (nzchar(input$interaction_terms)) formula_text <- paste(formula_text, "+", trimws(input$interaction_terms))
+    xvars <- input$xvars
+    interaction_terms <- input$interaction_terms
+    
+    if (input$center_numeric) {
+      for (v in xvars) {
+        if (is.numeric(df[[v]])) {
+          centered_name <- paste0(v, "_c")
+          df[[centered_name]] <- df[[v]] - mean(df[[v]], na.rm = TRUE)
+          xvars[xvars == v] <- centered_name
+          interaction_terms <- gsub(v, centered_name, interaction_terms)
+        }
+      }
+    }
+    
+    yvar <- paste0("`", input$yvar, "`")
+    xvars_text <- paste0("`", xvars, "`", collapse = " + ")
+    formula_text <- paste(yvar, "~", xvars_text)
+    
+    if (nzchar(interaction_terms)) {
+      interactions <- strsplit(interaction_terms, "\\+")[[1]]
+      interactions <- trimws(interactions)
+      interactions_bt <- sapply(interactions, function(term) {
+        parts <- strsplit(term, ":")[[1]]
+        paste0(paste0("`", trimws(parts), "`", collapse = ":"))
+      })
+      formula_text <- paste(formula_text, "+", paste(interactions_bt, collapse = " + "))
+    }
+    
     formula <- as.formula(formula_text)
-    if (input$model_type == "lm") lm(formula, data = df) else glm(formula, data = df, family = binomial)
+    
+    if (input$model_type == "lm") {
+      lm(formula, data = df)
+    } else {
+      glm(formula, data = df, family = binomial)
+    }
   })
   
-  # Model summary
+  # ---- Model summary ----
   output$model_summary <- renderPrint({ req(model_fit()); summary(model_fit()) })
   
-  # Model commentary
+  # ---- Model commentary (patched) ----
   output$model_commentary <- renderText({
     req(model_fit())
     fit <- model_fit()
@@ -204,29 +267,33 @@ server <- function(input, output, session) {
     coef_df$term <- rownames(coef_sum)
     rownames(coef_df) <- NULL
     coef_df <- coef_df[!coef_df$term %in% c("(Intercept)", "Intercept"), ]
-    sig_df <- coef_df[coef_df[,4] < 0.05, ]
+    
+    pcol <- if (input$model_type == "glm") "Pr(>|z|)" else "Pr(>|t|)"
+    sig_df <- coef_df[coef_df[[pcol]] < 0.05, ]
+    
     if (nrow(sig_df) == 0) return("No significant associations found (p < 0.05).")
+    
     comments <- sapply(1:nrow(sig_df), function(i) {
       term <- sig_df$term[i]
       est <- round(sig_df$Estimate[i], 3)
-      pval <- format.pval(sig_df[i,4], digits = 3, eps = 0.001)
+      pval <- format.pval(sig_df[[pcol]][i], digits = 3, eps = 0.001)
       if (input$model_type == "glm") {
         or <- round(exp(est), 2)
         direction <- ifelse(est > 0, "increases odds", "decreases odds")
         paste0(term, " ", direction, " (OR = ", or, ", p = ", pval, ")")
       } else {
         direction <- ifelse(est > 0, "positively", "negatively")
-        paste0(term, " is ", direction, " associated (β = ", est, ", p = ", pval, ")")
+        paste0(term, " is ", direction, " associated with the outcome ",
+               "(β = ", est, ", p = ", pval, ")")
       }
     })
+    
     paste(comments, collapse = ". ")
   })
   
-  # Regression Table
-  # Regression Table
+  # ---- Regression Table ----
   output$reg_table_gt <- render_gt({
     req(model_fit(), input$yvar)
-    
     tbl <- tbl_regression(
       model_fit(),
       exponentiate = (input$model_type == "glm")
@@ -236,10 +303,8 @@ server <- function(input, output, session) {
       tab_header(
         title = paste("Regression Table for Outcome:", input$yvar)
       )
-    
     tbl
   })
-  
   
   # Diagnostics Continuous
   output$diagnostic_plot <- renderPlot({
@@ -296,8 +361,8 @@ server <- function(input, output, session) {
     fit <- model_fit()
     aug <- broom::augment(fit)
     aug %>%
-      select(.cooksd, .hat) %>%
-      mutate(row = row_number()) %>%
+      mutate(.cooksd = as.numeric(.cooksd),
+             .hat = as.numeric(.hat)) %>%
       arrange(desc(.cooksd)) %>%
       head(10)
   })
@@ -425,8 +490,8 @@ server <- function(input, output, session) {
   </ul>
   <p><i>Summary:</i> The Brier Score is like an RMSE for predicted probabilities — lower means better overall probability accuracy.</p>
   ")
-})
-
+  })
+  
   
   # Basic Calibration Plot
   output$calibration_plot <- renderPlot({
@@ -485,22 +550,239 @@ server <- function(input, output, session) {
     plot(roc_obj, print.auc = TRUE, main = "ROC Curve")
   })
   
-  # Marginal Effects – fixed type mismatch
-  output$margins_plot <- renderPlot({
-    req(model_fit(), input$model_type == "glm")
-    df <- dataset()
-    formula <- formula(model_fit())
-    refit <- glm(formula, data = df, family = binomial)
-    m <- margins(refit)
-    plot(m)
+  
+  output$interaction_options <- renderUI({
+    req(model_fit())
+    
+    fit <- model_fit()
+    vars <- attr(terms(fit), "term.labels")
+    inter <- grep(":", vars, value = TRUE)
+    
+    if (length(inter) == 0) return(NULL)
+    
+    v <- strsplit(inter[1], ":")[[1]]
+    is_factor <- sapply(v, function(x) is.factor(fit$model[[x]]))
+    is_numeric <- sapply(v, function(x) is.numeric(fit$model[[x]]))
+    
+    if (all(is_factor)) {
+      radioButtons(
+        "catcat_estimand",
+        "Categorical × Categorical output",
+        choices = c(
+          "Cell means" = "means",
+          "Pairwise contrasts" = "contrasts"
+        ),
+        inline = TRUE
+      )
+    } else if (sum(is_factor) == 1 && sum(is_numeric) == 1) {
+      radioButtons(
+        "catcont_estimand",
+        "Categorical × Continuous output",
+        choices = c(
+          "Slopes (marginal effects)" = "slopes",
+          "Compare slopes between groups" = "comparisons"
+        ),
+        inline = TRUE
+      )
+    }
   })
   
+  # ---- Marginal Effects Table (patched) ----
+  # Marginal Effects – works for lm and glm
+  output$margins_plot <- renderPlot({
+    req(model_fit())
+    fit <- model_fit()
+    m <- tryCatch(margins(fit, data = fit$model), error = function(e) NULL)
+    
+    if (!is.null(m)) {
+      plot(m)
+      title(main = "Average Marginal Effects")
+    } else {
+      plot.new()
+      text(0.5, 0.5, "No marginal effects available.", cex = 1.3, col = "red")
+    }
+  })
+  
+  # margins table
   output$margins_table <- renderTable({
-    req(model_fit(), input$model_type == "glm")
-    df <- dataset()
-    formula <- formula(model_fit())
-    refit <- glm(formula, data = df, family = binomial)
-    summary(margins(refit))
+    
+    req(model_fit())
+    fit <- model_fit()
+    
+    # 🔒 Force reactivity to model structure
+    isolate({
+      formula(fit)
+    })
+    
+    # 🔥 Always start clean
+    df <- NULL
+    
+    
+    vars_in_model <- attr(terms(fit), "term.labels")
+    interaction_terms <- grep(":", vars_in_model, value = TRUE)
+    
+   
+    if (length(interaction_terms) > 0) {
+      
+      inter <- interaction_terms[1]
+      vars  <- strsplit(inter, ":")[[1]]
+      
+      is_factor <- sapply(vars, function(v) is.factor(fit$model[[v]]))
+      is_numeric <- sapply(vars, function(v) is.numeric(fit$model[[v]]))
+      
+      # --------------------------------------------------
+      # 1️⃣ Categorical × Categorical
+      # --------------------------------------------------
+      if (all(is_factor)) {
+        
+        choice <- input$catcat_estimand %||% "means"
+        
+        emm <- emmeans::emmeans(
+          fit,
+          as.formula(paste("~", vars[1], "*", vars[2]))
+        )
+        
+        if (choice == "contrasts") {
+          
+          df <- emmeans::contrast(
+            emm,
+            method = "pairwise"
+          ) |>
+            summary(infer = TRUE) |>
+            as.data.frame()
+          
+          df$Type <- "Pairwise contrasts (Cat × Cat)"
+          
+        } else {
+          
+          df <- summary(emm, infer = TRUE) |>
+            as.data.frame()
+          
+          df$Type <- "Estimated marginal means (cell means)"
+        }
+        
+        # --------------------------------------------------
+        # 2️⃣ Categorical × Continuous
+        # --------------------------------------------------
+      } else if (sum(is_factor) == 1 && sum(is_numeric) == 1) {
+        
+        cont_var <- vars[is_numeric]
+        cat_var  <- vars[is_factor]
+        
+        choice <- input$catcont_estimand %||% "slopes"
+        
+        if (choice == "comparisons") {
+          
+          tr <- emmeans::emtrends(
+            fit,
+            specs = as.formula(paste("~", cat_var)),
+            var = cont_var
+          )
+          
+          df <- emmeans::contrast(
+            tr,
+            method = "pairwise"
+          ) |>
+            summary(infer = TRUE) |>
+            as.data.frame()
+          
+          df$Type <- "Slope comparisons (Cat × Cont)"
+          
+        } else {
+          
+          df <- marginaleffects::slopes(
+            fit,
+            variables = cont_var,
+            by = cat_var
+          ) |>
+            as.data.frame()
+          
+          df$Type <- "Marginal slopes by group (Cat × Cont)"
+        }
+        
+        # --------------------------------------------------
+        # 3️⃣ Continuous × Continuous
+        # --------------------------------------------------
+      } else if (all(is_numeric)) {
+        
+        df <- marginaleffects::slopes(
+          fit,
+          variables = vars
+        ) |>
+          as.data.frame()
+        
+        df$Type <- "Marginal effects (Cont × Cont)"
+      }
+    }
+    
+ 
+
+    # --------------------------------------------------
+    # 4️⃣ No interaction → AMEs for continuous + factors
+    # --------------------------------------------------
+    if (length(interaction_terms) == 0) {
+      
+      outcome <- all.vars(formula(fit))[1]
+      
+      num_vars <- names(fit$model)[
+        sapply(fit$model, is.numeric)
+      ]
+      num_vars <- setdiff(num_vars, outcome)
+      
+      fac_vars <- names(fit$model)[
+        sapply(fit$model, is.factor)
+      ]
+      
+      dfs <- list()
+      
+      # ---- Continuous predictors ----
+      if (length(num_vars) > 0) {
+        dfs[["continuous"]] <-
+          marginaleffects::avg_slopes(
+            fit,
+            variables = num_vars
+          ) |>
+          as.data.frame()
+      }
+      
+      # ---- Factor predictors ----
+      if (length(fac_vars) > 0) {
+        dfs[["factors"]] <-
+          marginaleffects::avg_comparisons(
+            fit,
+            variables = fac_vars
+          ) |>
+          as.data.frame()
+      }
+      
+      if (length(dfs) == 0) {
+        return(data.frame(Message = "No marginal effects available."))
+      }
+      
+      df <- dplyr::bind_rows(dfs)
+      
+      df$Type <- "Average marginal effects (main effects)"
+    }
+    
+    
+    # --------------------------------------------------
+    # 🔧 Normalize columns
+    # --------------------------------------------------
+    if ("estimate" %in% names(df)) df$AME <- df$estimate
+    if ("emmean" %in% names(df))   df$AME <- df$emmean
+    if ("p.value" %in% names(df))  df$p   <- df$p.value
+    
+    # --------------------------------------------------
+    # 🧠 Interpretation
+    # --------------------------------------------------
+    df$Interpretation <- paste0(
+      "Estimate = ",
+      ifelse(!is.na(df$AME), round(df$AME, 3), "NA"),
+      ", p = ",
+      ifelse(!is.na(df$p), signif(df$p, 3), "NA")
+    )
+    
+    df
   })
   
   # Interaction Plot
@@ -509,19 +791,23 @@ server <- function(input, output, session) {
     fit <- model_fit()
     interaction_input <- trimws(input$interaction_terms)
     if (!nzchar(interaction_input)) {
-      plot.new()
-      text(0.5, 0.5, "No interaction term specified.", cex = 1.3)
-      return()
+      plot.new(); text(0.5, 0.5, "No interaction term specified.", cex = 1.3); return()
     }
     first_term <- trimws(strsplit(interaction_input, "\\+")[[1]][1])
     if (!grepl(":", first_term)) {
-      plot.new()
-      text(0.5, 0.5, "Invalid format. Use x1:x2", cex = 1.3)
-      return()
+      plot.new(); text(0.5, 0.5, "Invalid format. Use x1:x2", cex = 1.3); return()
     }
     terms <- trimws(strsplit(first_term, ":")[[1]])
+    
+    # If centering was applied, swap to centered names
+    if (input$center_numeric) {
+      terms <- sapply(terms, function(t) {
+        if (t %in% names(fit$model) && grepl("_c$", t)) t else if (paste0(t, "_c") %in% names(fit$model)) paste0(t, "_c") else t
+      })
+    }
+    
     pred <- ggpredict(fit, terms = terms)
-    plot(pred) + labs(title = paste("Interaction:", first_term))
+    plot(pred) + labs(title = paste("Interaction:", paste(terms, collapse = ":")))
   })
   
   # Coefficient Plots
@@ -535,67 +821,167 @@ server <- function(input, output, session) {
     ggstats::ggcoef_table(model_fit(), exponentiate = (input$model_type == "glm"))
   })
   
-  # Save functionality
-  # ---- Folder selection ----
-  # Save functionality – NOW FULLY FIXED
-  roots <- c(Home = "~", Results = "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results")
-  shinyDirChoose(input, "save_dir", roots = roots, session = session)
-  save_path <- reactiveVal(NULL)
-  
-  observeEvent(input$save_dir, {
-    req(input$save_dir)
-    path <- parseDirPath(roots, input$save_dir)
-    save_path(path)
-  })
-  
-  observeEvent(input$save_outputs, {
-    req(model_fit(), save_path())
-    dir <- save_path()
-    prefix <- input$save_prefix
-    fit <- model_fit()
-    
-    # --- Regression Table ---
-    reg_table <- tbl_regression(fit, exponentiate = (input$model_type == "glm")) %>%
-      add_global_p() %>%
-      as_flex_table()
-    
-    doc <- read_docx() %>%
-      body_add_par("Regression Table", style = "heading 1") %>%
-      body_add_flextable(reg_table)
-    
-    # --- Save coefficient plot ---
-    g_coef <- ggstats::ggcoef_model(fit, exponentiate = (input$model_type == "glm"))
-    ggsave(file.path(dir, paste0(prefix, "_coefplot.png")), g_coef,
-           width = 9, height = 6, dpi = 300)
-    
-    # --- Save ROC plot if logistic ---
-    if (input$model_type == "glm") {
-      actual <- as.numeric(as.factor(fit$model[[input$yvar]])) - 1
-      roc_obj <- pROC::roc(actual, fitted(fit))
-      png(file.path(dir, paste0(prefix, "_roc.png")), width = 700, height = 600)
-      plot(roc_obj, print.auc = TRUE)
-      dev.off()
-    }
-    
-    # --- Save interaction plot if specified ---
-    if (nzchar(trimws(input$interaction_terms))) {
-      first_term <- trimws(strsplit(input$interaction_terms, "\\+")[[1]][1])
-      if (grepl(":", first_term)) {
-        terms <- trimws(strsplit(first_term, ":")[[1]])
-        pred <- ggpredict(fit, terms = terms)
-        g_inter <- plot(pred) + labs(title = paste("Interaction:", first_term))
-        ggsave(file.path(dir, paste0(prefix, "_interaction.png")), g_inter,
-               width = 9, height = 6, dpi = 300)
+  # ---- Word Export (patched) ----
+  output$download_docx <- downloadHandler(
+    filename = function() { paste0(input$fname_base, "_report.docx") },
+    content = function(file) {
+      req(model_fit())
+      fit <- model_fit()
+      
+      reg_table <- tbl_regression(fit, exponentiate = (input$model_type == "glm")) %>%
+        add_global_p() %>%
+        as_flex_table()
+      
+      vars_in_model <- attr(terms(fit), "term.labels")
+      interaction_terms <- grep(":", vars_in_model, value = TRUE)
+      
+      if (length(interaction_terms) > 0) {
+        first_term <- interaction_terms[1]
+        parts <- strsplit(first_term, ":")[[1]]
+        cont_var <- parts[which(sapply(parts, function(v) is.numeric(fit$model[[v]])))]
+        cat_var  <- parts[which(sapply(parts, function(v) is.factor(fit$model[[v]])))]
+        at_list <- setNames(list(levels(fit$model[[cat_var]])), cat_var)
+        cond_sum <- summary(margins(fit, variables = cont_var, at = at_list, data = fit$model))
+        ame_sum <- summary(margins(fit, data = fit$model))
+        other_vars <- setdiff(ame_sum$factor, cond_sum$factor)
+        ame_sum <- ame_sum[ame_sum$factor %in% other_vars, ]
+        m_sum <- dplyr::bind_rows(cond_sum, ame_sum)
+      } else {
+        m_sum <- summary(margins(fit, data = fit$model))
       }
+      
+      m_sum$Interpretation <- apply(m_sum, 1, function(row) {
+        interpret_effect(row["factor"], round(as.numeric(row["AME"]), 3),
+                         signif(as.numeric(row["p"]), 3), input$model_type)
+      })
+      
+      margins_table <- flextable::qflextable(m_sum)
+      
+      doc <- read_docx() %>%
+        body_add_par("Regression Table", style = "heading 1") %>%
+        body_add_flextable(reg_table) %>%
+        body_add_par("Marginal Effects Table", style = "heading 1") %>%
+        body_add_flextable(margins_table)
+      
+      print(doc, target = file)
     }
-    
-    # --- Save Word doc with regression table only ---
-    doc_path <- file.path(dir, paste0(prefix, "_report.docx"))
-    print(doc, target = doc_path)
-    
-    output$save_msg <- renderText(paste("Regression table and plots saved to:\n", dir))
-  })
-  
+  )
+  output$download_zip <- downloadHandler(
+    filename = function() {
+      paste0(input$fname_base, "_plots.zip")
+    },
+    content = function(file) {
+      
+      req(model_fit())
+      
+      fit <- model_fit()
+      tmpdir <- tempdir()
+      files <- c()
+      
+      # ---- helper: safely create plots ----
+      safe_plot <- function(expr, path) {
+        tryCatch({
+          expr
+          if (file.exists(path)) path else NULL
+        }, error = function(e) {
+          message("Plot failed: ", e$message)
+          NULL
+        })
+      }
+      
+      # ---- Coefficient plot (ggplot) ----
+      coef_path <- file.path(tmpdir, paste0(input$fname_base, "_coefplot.png"))
+      g_coef <- ggstats::ggcoef_model(
+        fit,
+        exponentiate = (input$model_type == "glm")
+      )
+      
+      files <- c(
+        files,
+        safe_plot(
+          ggsave(coef_path, g_coef, width = 9, height = 6, dpi = 300),
+          coef_path
+        )
+      )
+      
+      # ---- ROC plot (base R) ----
+      if (input$model_type == "glm") {
+        roc_path <- file.path(tmpdir, paste0(input$fname_base, "_roc.png"))
+        
+        files <- c(
+          files,
+          safe_plot({
+            actual <- as.numeric(as.factor(fit$model[[input$yvar]])) - 1
+            roc_obj <- pROC::roc(actual, fitted(fit))
+            png(roc_path, width = 700, height = 600)
+            plot(roc_obj, print.auc = TRUE)
+            dev.off()
+          }, roc_path)
+        )
+      }
+      
+      # ---- Interaction plot (ggpredict) ----
+      if (nzchar(trimws(input$interaction_terms))) {
+        first_term <- trimws(strsplit(input$interaction_terms, "\\+")[[1]][1])
+        if (grepl(":", first_term)) {
+          
+          inter_path <- file.path(tmpdir, paste0(input$fname_base, "_interaction.png"))
+          
+          files <- c(
+            files,
+            safe_plot({
+              terms <- trimws(strsplit(first_term, ":")[[1]])
+              pred <- ggpredict(fit, terms = terms)
+              g_inter <- plot(pred) +
+                labs(title = paste("Interaction:", first_term))
+              ggsave(inter_path, g_inter, width = 9, height = 6, dpi = 300)
+            }, inter_path)
+          )
+        }
+      }
+      
+      # ---- Marginal effects plot (base R) ----
+      margins_path <- file.path(tmpdir, paste0(input$fname_base, "_margins.png"))
+      m <- tryCatch(margins(fit, data = fit$model), error = function(e) NULL)
+      
+      files <- c(
+        files,
+        safe_plot({
+          png(margins_path, width = 900, height = 600)
+          if (!is.null(m)) {
+            plot(m)
+            title(main = "Marginal Effects")
+          } else {
+            plot.new()
+            text(0.5, 0.5, "No marginal effects available.", cex = 1.3)
+          }
+          dev.off()
+        }, margins_path)
+      )
+      # ---- clean ZIP structure ----
+      
+      zip_dir <- file.path(tmpdir, "zip_staging")
+      dir.create(zip_dir, showWarnings = FALSE)
+      
+      # copy plots into staging dir
+      for (f in files) {
+        file.copy(f, file.path(zip_dir, basename(f)), overwrite = TRUE)
+      }
+      
+      zip_files <- list.files(zip_dir, full.names = FALSE)
+      
+      if (length(zip_files) == 0) {
+        stop("No plots available to zip")
+      }
+      
+      old_wd <- setwd(zip_dir)
+      on.exit(setwd(old_wd), add = TRUE)
+      
+      utils::zip(
+        zipfile = normalizePath(file, mustWork = FALSE),
+        files   = zip_files
+      )
+    }
+  )
 }
-
-shinyApp(ui, server)#
+shinyApp(ui, server)

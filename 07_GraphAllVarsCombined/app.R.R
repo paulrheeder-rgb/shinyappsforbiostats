@@ -1,11 +1,10 @@
 # ============================================================
-# Unified Graph App – FINAL WORKING VERSION – Dec 26, 2025
+# Unified Graph App – FINAL WORKING VERSION – Jan 07, 2026
 # • All plots display correctly
-# • All tabs save to Word (.docx)
-# • No more '...' errors or missing renders
+# • All tabs download to Word (.docx) via browser dialog
+# • No fixed save folders; shinyFiles removed
 # ============================================================
 library(shiny)
-library(shinyFiles)
 library(ggplot2)
 library(dplyr)
 library(gridExtra)
@@ -58,9 +57,7 @@ ui <- fluidPage(
                  actionButton("plot_cont_btn", "Generate Plots", class = "btn-primary"),
                  hr(),
                  textInput("save_name_cont", "Word file name (no ext)", value = "Continuous_Plots"),
-                 shinyDirButton("save_dir_cont", "Select save folder", "Choose folder"),
-                 actionButton("save_cont_plots", "Save to Folder", class = "btn-success"),
-                 textOutput("save_msg_cont")
+                 downloadButton("download_cont", "Download Word File", class = "btn-success")
                ),
                mainPanel(plotOutput("combined_cont_plot", height = "1200px"))
              )),
@@ -74,9 +71,7 @@ ui <- fluidPage(
                  actionButton("plot_cat_btn", "Generate Plots", class = "btn-primary"),
                  hr(),
                  textInput("save_name_cat", "Word file name (no ext)", value = "Categorical_Plots"),
-                 shinyDirButton("save_dir_cat", "Select save folder", "Choose folder"),
-                 actionButton("save_cat_plots", "Save to Folder", class = "btn-success"),
-                 textOutput("save_msg_cat")
+                 downloadButton("download_cat", "Download Word File", class = "btn-success")
                ),
                mainPanel(plotOutput("combined_cat_plot", height = "800px"))
              )),
@@ -87,9 +82,7 @@ ui <- fluidPage(
                  uiOutput("box_ui"),
                  hr(),
                  textInput("save_name_box", "Word file name (no ext)", value = "Boxplot"),
-                 shinyDirButton("save_dir_box", "Select save folder", "Choose folder"),
-                 actionButton("save_boxplots", "Save to Folder", class = "btn-success"),
-                 textOutput("save_msg_box")
+                 downloadButton("download_box", "Download Word File", class = "btn-success")
                ),
                mainPanel(
                  plotOutput("boxplot", height = "700px"),
@@ -120,9 +113,7 @@ ui <- fluidPage(
                  hr(),
                  h4("Save Scatterplot"),
                  textInput("wordfile_scatter", "Word file name (no ext)", "Scatterplot"),
-                 shinyDirButton("scatter_dir", "Select save folder", "Select folder"),
-                 actionButton("save_scatter", "Save to Folder", class = "btn-success"),
-                 textOutput("save_msg_scatter")
+                 downloadButton("download_scatter", "Download Word File", class = "btn-success")
                ),
                mainPanel(plotOutput("scatterplot", height = "600px"))
              ))
@@ -133,14 +124,6 @@ ui <- fluidPage(
 # SERVER
 # ------------------------------------------------------------
 server <- function(input, output, session) {
-  
-  roots <- c(Home = normalizePath("~"),
-             Results = "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results")
-  
-  shinyDirChoose(input, "save_dir_cont", roots = roots, session = session)
-  shinyDirChoose(input, "save_dir_cat", roots = roots, session = session)
-  shinyDirChoose(input, "save_dir_box", roots = roots, session = session)
-  shinyDirChoose(input, "scatter_dir", roots = roots, session = session)
   
   # Data loading
   output$env_data_ui <- renderUI({
@@ -230,20 +213,6 @@ server <- function(input, output, session) {
   
   output$combined_cont_plot <- renderPlot({ cont_combined_plot() })
   
-  observeEvent(input$save_cont_plots, {
-    req(df(), cont_combined_plot())
-    dir_path <- parseDirPath(roots, input$save_dir_cont)
-    if (is.null(dir_path) || dir_path == "") {
-      output$save_msg_cont <- renderText("❌ Please choose a folder first.")
-      return()
-    }
-    full_path <- file.path(dir_path, paste0(input$save_name_cont, ".docx"))
-    p <- cont_combined_plot()
-    doc <- read_docx() %>% body_add_gg(p, width = 10, height = 10)
-    print(doc, target = full_path)
-    output$save_msg_cont <- renderText(paste("✅ Saved to:", full_path))
-  })
-  
   # Categorical plots
   cat_combined_plot <- reactive({
     req(df(), input$factor_vars)
@@ -254,20 +223,6 @@ server <- function(input, output, session) {
   })
   
   output$combined_cat_plot <- renderPlot({ cat_combined_plot() })
-  
-  observeEvent(input$save_cat_plots, {
-    req(df(), cat_combined_plot())
-    dir_path <- parseDirPath(roots, input$save_dir_cat)
-    if (is.null(dir_path) || dir_path == "") {
-      output$save_msg_cat <- renderText("❌ Please choose a folder first.")
-      return()
-    }
-    full_path <- file.path(dir_path, paste0(input$save_name_cat, ".docx"))
-    p <- cat_combined_plot()
-    doc <- read_docx() %>% body_add_gg(p, width = 10, height = 8)
-    print(doc, target = full_path)
-    output$save_msg_cat <- renderText(paste("✅ Saved to:", full_path))
-  })
   
   # ======================== BOXPLOTS ========================
   output$box_ui <- renderUI({
@@ -444,20 +399,6 @@ server <- function(input, output, session) {
     box_plot()
   })
   
-  observeEvent(input$save_boxplots, {
-    req(df(), box_plot())
-    dir_path <- parseDirPath(roots, input$save_dir_box)
-    if (is.null(dir_path) || dir_path == "") {
-      output$save_msg_box <- renderText("❌ Please choose a folder first.")
-      return()
-    }
-    full_path <- file.path(dir_path, paste0(input$save_name_box, ".docx"))
-    p <- box_plot()
-    doc <- read_docx() %>% body_add_gg(p, width = 7, height = 6)
-    print(doc, target = full_path)
-    output$save_msg_box <- renderText(paste("✅ Saved to:", full_path))
-  })
-  
   # ======================== SCATTERPLOT ========================
   scatter_plot <- reactive({
     req(df(), input$xvar_s, input$yvar_s)
@@ -533,22 +474,52 @@ server <- function(input, output, session) {
     scatter_plot()
   })
   
-  observeEvent(input$save_scatter, {
-    req(df(), scatter_plot())
-    dir_path <- parseDirPath(roots, input$scatter_dir)
-    if (is.null(dir_path) || dir_path == "") {
-      output$save_msg_scatter <- renderText("❌ Please choose a folder first.")
-      return()
+  # ======================== DOWNLOAD HANDLERS ========================
+  output$download_cont <- downloadHandler(
+    filename = function() {
+      paste0(input$save_name_cont, ".docx")
+    },
+    content = function(file) {
+      req(cont_combined_plot())
+      p <- cont_combined_plot()
+      doc <- read_docx() %>% body_add_gg(p, width = 10, height = 10)
+      print(doc, target = file)
     }
-    full_path <- file.path(dir_path, paste0(input$wordfile_scatter, ".docx"))
-    p <- scatter_plot()
-    doc <- read_docx() %>% body_add_gg(p, width = 7, height = 6)
-    print(doc, target = full_path)
-    output$save_msg_scatter <- renderText(paste("✅ Saved to:", full_path))
-  })
+  )
+  
+  output$download_cat <- downloadHandler(
+    filename = function() paste0(input$save_name_cat, ".docx"),
+    content = function(file) {
+      req(cat_combined_plot())
+      p <- cat_combined_plot()
+      doc <- read_docx() %>% body_add_gg(p, width = 10, height = 8)
+      print(doc, target = file)
+    }
+  )
+  
+  output$download_box <- downloadHandler(
+    filename = function() paste0(input$save_name_box, ".docx"),
+    content = function(file) {
+      req(box_plot())
+      p <- box_plot()
+      doc <- read_docx() %>% body_add_gg(p, width = 7, height = 6)
+      print(doc, target = file)
+    }
+  )
+  
+  output$download_scatter <- downloadHandler(
+    filename = function() paste0(input$wordfile_scatter, ".docx"),
+    content = function(file) {
+      req(scatter_plot())
+      p <- scatter_plot()
+      doc <- read_docx() %>% body_add_gg(p, width = 7, height = 6)
+      print(doc, target = file)
+    }
+  )
 }
 
 # ============================================================
 # Run App
 # ============================================================
 shinyApp(ui = ui, server = server)
+

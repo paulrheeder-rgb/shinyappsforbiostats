@@ -1,5 +1,3 @@
-# App1 Post Import – AUTO SAVE + DUPLICATE CHECK + FORCATS (ONE BUTTON PER FUNCTION)
-# ------------------------------------------------------------
 library(shiny)
 library(readxl)
 library(haven)
@@ -59,10 +57,8 @@ ui <- fluidPage(
       
       h4("Create New Factor with case_when"),
       textInput("new_var", "New variable name"),
-      textAreaInput(
-        "case_expr", "case_when expression", rows = 5,
-        placeholder = 'e.g. age > 65 ~ "Elderly", age <= 65 ~ "Young"'
-      ),
+      textAreaInput("case_expr", "case_when expression", rows = 5,
+                    placeholder = 'e.g. age > 65 ~ "Elderly", age <= 65 ~ "Young"'),
       textInput("new_levels", "Factor levels (comma-separated) – required",
                 placeholder = "Elderly, Young"),
       textInput("new_labels", "Factor labels (comma-separated) – optional",
@@ -71,32 +67,28 @@ ui <- fluidPage(
       actionButton("mutate_case", "Mutate New Factor"),
       hr(),
       
-      # ------------------- NEW: FORCATS PANEL (ONE BUTTON PER FUNCTION) -------------------
       uiOutput("forcats_ui"),
-      # -----------------------------------------------------------------------------------
-      
+      hr(),
       h4("Save Modified Data"),
       textInput("save_name", "Base file name (no extension)", "modified_dataset"),
-      actionButton("save_files", "Save Files", class = "btn-success"),
-      textOutput("save_msg")
-    ),
+      downloadButton("download_rdata", "Download modified data (.RData)", class = "btn-success"),
+      downloadButton("download_dict", "Download data dictionary (.xlsx)", class = "btn-success")
+    ),   # close sidebarPanel
     
     mainPanel(
       h4("Dataset Preview"),
       DTOutput("preview"),
       hr(),
-      
       h4("Variable Summary (complete unique values)"),
       DTOutput("var_summary"),
       hr(),
-      
       h4("Structure & Labels"),
       verbatimTextOutput("structure")
     )
-  )
-)
+  )   # close sidebarLayout
+)     # close fluidPage
 
-server <- function(input, output, session) {
+  server <- function(input, output, session) {
   dataset <- reactiveVal(NULL)
   save_folder <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/data"
   
@@ -334,8 +326,8 @@ server <- function(input, output, session) {
                    class = "btn-warning", width = "100%")
     )  # ← tagList closes here
   })  # ← renderUI closes here
-
-
+  
+  
   # 1. Create fct_infreq
   observeEvent(input$make_infreq, {
     req(dataset(), input$freq_var)
@@ -430,35 +422,54 @@ server <- function(input, output, session) {
     str(dataset())
   })
   
-  # SAVE FILES + DICTIONARY (includes ALL new columns)
-  observeEvent(input$save_files, {
-    req(dataset())
-    dir <- normalizePath(save_folder, mustWork = FALSE)
-    base <- input$save_name
-    df <- dataset()
-    
-    # Save RData
-    rdata_path <- file.path(dir, paste0(base, ".RData"))
-    save(df, file = rdata_path)
-    
-    # Build full dictionary
-    dict <- data.frame(
-      Variable = names(df),
-      Class = sapply(df, function(x) paste(class(x), collapse = ", ")),
-      Label = sapply(df, function(x) { l <- var_label(x); if (is.null(l)) "" else l }),
-      Levels = sapply(df, function(x) {
-        if (is.factor(x)) paste(levels(x), collapse = "; ") else ""
-      }),
-      stringsAsFactors = FALSE
-    )
-    
-    dict_path <- file.path(dir, paste0(base, "_dictionary.xlsx"))
-    writexl::write_xlsx(dict, dict_path)
-    
-    output$save_msg <- renderText(paste0(
-      "Files saved:\n", rdata_path, "\n", dict_path
-    ))
-  })
+  # DOWNLOADS
+  output$download_rdata <- downloadHandler(
+    filename = function() paste0(input$save_name, ".RData"),
+    content = function(file) {
+      req(dataset())
+      df <- dataset()
+      save(df, file = file)
+    }
+  )
+  
+  output$download_dict <- downloadHandler(
+    filename = function() paste0(input$save_name, "_dictionary.xlsx"),
+    content = function(file) {
+      req(dataset())
+      df <- dataset()
+      
+      dict <- data.frame(
+        Variable = names(df),
+        Class = sapply(df, function(x) paste(class(x), collapse = ", ")),
+        Label = sapply(df, function(x) { 
+          l <- var_label(x); if (is.null(l)) "" else l 
+        }),
+        Levels = sapply(df, function(x) {
+          if (is.factor(x)) paste(levels(x), collapse = "; ") else ""
+        }),
+        Codes_Labels = sapply(df, function(x) {
+          if (is.factor(x)) {
+            # factors: show level = label
+            paste0(levels(x), "=", levels(x), collapse = "; ")
+          } else if (!is.null(val_labels(x))) {
+            # haven/labelled variables: show code = label
+            vlab <- val_labels(x)
+            paste0(names(vlab), "=", vlab, collapse = "; ")
+          } else {
+            # fallback: show first few unique values
+            vals <- unique(x)
+            vals <- vals[!is.na(vals)]
+            paste(head(vals, 10), collapse = ", ")
+          }
+        }),
+        stringsAsFactors = FALSE
+      )
+      
+      writexl::write_xlsx(dict, file)
+    }
+  )
+  
 }
 
 shinyApp(ui, server)
+

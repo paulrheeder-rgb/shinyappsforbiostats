@@ -1,5 +1,6 @@
-# App4 Table1 or 2
-# Load libraries
+# =========================================================
+# App4: Table1/Table2 Descriptive Statistics with Download & dfSummary Browser
+# =========================================================
 library(shiny)
 library(shinyFiles)
 library(readxl)
@@ -10,7 +11,10 @@ library(flextable)
 library(summarytools)
 library(haven)
 library(conflicted)
+library(sortable)   # for drag-and-drop ordering
+
 conflicts_prefer(dplyr::filter)
+conflicts_prefer(shiny::validate)
 
 # --- Function to summarize missing values ---
 make_missing_table <- function(df) {
@@ -27,7 +31,7 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       h4("Load Dataset"),
-      fileInput("file", "Upload Excel or Stata or RData", 
+      fileInput("file", "Upload Excel/Stata/RData/CSV", 
                 accept = c(".RData", ".rds", ".xlsx", ".xls", ".dta", ".csv")),
       
       selectInput("env_dataset", "Or select dataset from R environment:", 
@@ -39,6 +43,7 @@ ui <- fluidPage(
       uiOutput("parametric_vars"),
       uiOutput("nonparametric_vars"),
       uiOutput("categorical_vars"),
+      uiOutput("reorder_vars"),
       
       actionButton("view_summary", "View Data Summary (dfSummary)"),
       actionButton("view_missing", "View Missing Data"),
@@ -46,8 +51,7 @@ ui <- fluidPage(
       
       h4("💾 Save Table"),
       textInput("save_name", "File name (no extension):", "table1_summary"),
-      actionButton("save_btn", "Save Word File", class = "btn-success"),
-      textOutput("save_msg")
+      downloadButton("download_summary", "Download Word File", class = "btn-success")
     ),
     
     mainPanel(
@@ -76,12 +80,11 @@ server <- function(input, output, session) {
                  rds  = readRDS(input$file$datapath),
                  validate("Unsupported file type"))
     
-    df <- df %>%
-      mutate(across(where(is.character),
-                    ~ iconv(.x, from = "", to = "UTF-8", sub = "byte"))) %>%
-      mutate(across(where(is.factor),
-                    ~ factor(iconv(as.character(.x),
-                                   from = "", to = "UTF-8", sub = "byte"))))
+  #  df <- df %>%
+  #                  ~ iconv(.x, from = "", to = "UTF-8", sub = "byte"))) %>%
+  # mutate(across(where(is.factor),
+  #   ~ factor(iconv(as.character(.x),
+  #              from = "", to = "UTF-8", sub = "byte"))))
     dataset(df)
   })
   
@@ -119,129 +122,95 @@ server <- function(input, output, session) {
                 choices = names(dataset()), multiple = TRUE)
   })
   
-  # ---- Custom helper: switch between Chi-square and Fisher ----
-  # ---- Custom helper: adaptive Chi-square or Fisher test ----
+  output$reorder_vars <- renderUI({
+    req(dataset())
+    # Collect selected variables
+    selected_vars <- c(input$vars_param, input$vars_nonparam, input$vars_cat)
+    if (length(selected_vars) == 0) return(NULL)
+    
+    rank_list(
+      text = "Drag to reorder variables:",
+      labels = selected_vars,
+      input_id = "ordered_vars"
+    )
+  })
+  
+  
+  # ---- Adaptive Chi-square or Fisher test ----
   chisq_or_fisher <- function(data, variable, by, ...) {
     tbl <- table(data[[variable]], data[[by]])
-    
-    # Handle missing or degenerate tables gracefully
-    if (any(dim(tbl) < 2)) {
-      return(tibble::tibble(
-        variable = variable,
-        p.value = NA_real_,
-        method = "Insufficient data"
-      ))
-    }
-    
-    # Compute expected counts safely
+    if (any(dim(tbl) < 2)) return(tibble::tibble(variable = variable, p.value = NA_real_, method = "Insufficient data"))
     test_chi <- suppressWarnings(chisq.test(tbl))
     expected <- test_chi$expected
-    
     if (any(expected < 5)) {
-      test_result <- fisher.test(tbl,workspace = 2e7)
+      test_result <- fisher.test(tbl, workspace = 2e7)
       method <- "Fisher's exact test"
     } else {
       test_result <- test_chi
       method <- "Chi-squared test"
     }
-    
-    # Return as tibble for gtsummary compatibility
-    tibble::tibble(
-      variable = variable,
-      p.value = test_result$p.value,
-      method = method
-    )
+    tibble::tibble(variable = variable, p.value = test_result$p.value, method = method)
   }
   
-  
+  # ---- Summary Table ----
   # ---- Summary Table ----
   summaryTable <- reactive({
     req(dataset())
     df <- dataset()
     
-    # --- Get selected variables ---
-    selected_vars <- unique(c(input$vars_param, input$vars_nonparam, input$vars_cat))
+    # collect selected variables
+    selected_vars <- input$ordered_vars
+    
     validate(need(length(selected_vars) > 0, "Please select at least one variable."))
     
-    numeric_vars <- c(input$vars_param, input$vars_nonparam)
-    
-    # --- Clean numeric variables ---
-    if (length(numeric_vars) > 0) {
-      df[numeric_vars] <- lapply(df[numeric_vars], function(x) {
-        suppressWarnings(as.numeric(gsub("[^0-9.-]", "", as.character(x))))
-      })
-    }
-    
-    # --- Force categorical variables to retain ALL levels ---
-    if (length(input$vars_cat) > 0) {
-      df[input$vars_cat] <- lapply(df[input$vars_cat], function(x) {
-        x <- as.factor(x)
-        x <- factor(x, levels = unique(c(levels(x), as.character(unique(x)))))
-        x
-      })
-    }
-    
-    # --- Prepare statistics list ---
-    stat_list <- list()
-    if (length(input$vars_param) > 0)
-      stat_list <- c(stat_list, setNames(rep("{mean} ({sd})", length(input$vars_param)),
-                                         input$vars_param))
-    if (length(input$vars_nonparam) > 0)
-      stat_list <- c(stat_list, setNames(rep("{median} [{p25}, {p75}]",
-                                             length(input$vars_nonparam)),
-                                         input$vars_nonparam))
-    if (length(input$vars_cat) > 0)
-      stat_list <- c(stat_list, setNames(rep("{n} ({p}%)", length(input$vars_cat)),
-                                         input$vars_cat))
-    
-    # --- Determine grouping variable (if any) ---
+    # determine grouping variable
     by_var <- if (input$group != "None") input$group else NULL
     
-    # --- Create table summary ---
-    # ---- Determine variable types explicitly ----
-    type_list <- list()
-    
-    if (length(c(input$vars_param, input$vars_nonparam)) > 0) {
-      type_list <- c(
-        type_list,
-        setNames(rep("continuous", length(c(input$vars_param, input$vars_nonparam))),
-                 c(input$vars_param, input$vars_nonparam))
-      )
-    }
-    
-    if (length(input$vars_cat) > 0) {
-      type_list <- c(
-        type_list,
-        setNames(rep("categorical", length(input$vars_cat)),
-                 input$vars_cat)
-      )
-    }
-    
-    # --- Determine data to include safely ---
-    if (!is.null(by_var)) {
-      df_use <- df[, unique(c(selected_vars, by_var)), drop = FALSE]
+    # subset while preserving labels
+    df_use <- if (!is.null(by_var)) {
+      df %>% select(all_of(c(selected_vars, by_var)))
     } else {
-      df_use <- df[, selected_vars, drop = FALSE]
+      df %>% select(all_of(selected_vars))
     }
     
-    # --- Build the gtsummary table ---
+    # reattach labels from original df
+    for (v in names(df_use)) {
+      attr(df_use[[v]], "label") <- attr(df[[v]], "label")
+    }
+    
+    # build statistic and type lists
+    stat_list <- list()
+    type_list <- list()
+    for (v in input$vars_param) {
+      stat_list[[v]] <- "{mean} ({sd})"
+      type_list[[v]] <- "continuous"
+    }
+    for (v in input$vars_nonparam) {
+      stat_list[[v]] <- "{median} [{p25}, {p75}] [{min}, {max}]"
+      type_list[[v]] <- "continuous"
+    }
+    for (v in input$vars_cat) {
+      stat_list[[v]] <- "{n} ({p}%)"
+      type_list[[v]] <- "categorical"
+    }
+    
+    # build gtsummary table
     tbl <- tbl_summary(
       data = df_use,
       by = by_var,
       statistic = stat_list,
-      digits = all_continuous() ~ 1, 
+      digits = all_continuous() ~ 1,
       missing = "ifany",
-      type = type_list,
-      label = list()
+      type = type_list
     ) %>%
       modify_header(label = "**Variable**") %>%
-      modify_caption(if (is.null(by_var))
-        "**Descriptive statistics (overall)**"
-        else
+      modify_caption(if (is.null(by_var)) 
+        "**Descriptive statistics (overall)**" 
+        else 
           "**Descriptive statistics by group**") %>%
       bold_labels()
     
-    # --- Add p-values if grouping variable present ---
+    # add p-values if grouping variable is present
     if (!is.null(by_var)) {
       n_groups <- df %>%
         filter(!is.na(.data[[by_var]])) %>%
@@ -250,18 +219,10 @@ server <- function(input, output, session) {
         length()
       
       test_list <- list()
-      if (length(input$vars_param) > 0)
-        test_list <- c(test_list,
-                       setNames(rep(ifelse(n_groups > 2, "oneway.test", "t.test"),
-                                    length(input$vars_param)), input$vars_param))
-      if (length(input$vars_nonparam) > 0)
-        test_list <- c(test_list,
-                       setNames(rep(ifelse(n_groups > 2, "kruskal.test", "wilcox.test"),
-                                    length(input$vars_nonparam)), input$vars_nonparam))
-      if (length(input$vars_cat) > 0)
-        test_list <- c(test_list,
-                       setNames(rep("chisq_or_fisher", length(input$vars_cat)),
-                                input$vars_cat))
+      for (v in input$vars_param)    test_list[[v]] <- ifelse(n_groups > 2, "oneway.test", "t.test")
+      for (v in input$vars_nonparam) test_list[[v]] <- ifelse(n_groups > 2, "kruskal.test", "wilcox.test")
+      for (v in input$vars_cat)      test_list[[v]] <- "chisq_or_fisher"
+      
       if (length(test_list) > 0) tbl <- tbl %>% add_p(test = test_list)
     }
     
@@ -281,7 +242,7 @@ server <- function(input, output, session) {
     temp_html <- capture.output(
       print(dfSummary(df, varnumbers = TRUE, valid.col = TRUE,
                       graph.col = TRUE, labels.col = TRUE, style = "grid"),
-            method = "render", footnote = NA)
+            method = "browser", footnote = NA)
     )
     showModal(modalDialog(
       title = "Data Summary (dfSummary)",
@@ -289,12 +250,7 @@ server <- function(input, output, session) {
       easyClose = TRUE,
       footer = modalButton("Close"),
       HTML(paste0('<div style="overflow-x:auto; width:1200px; max-width:95vw;">',
-                  paste(temp_html, collapse = "\n"), '</div>')),
-      tags$head(tags$style(HTML("
-        .modal-xl { max-width: 95vw !important; width: auto !important; }
-        .modal-body { overflow-x: auto; }
-        table { table-layout: auto !important; width: 100% !important; }
-      ")))
+                  paste(temp_html, collapse = "\n"), '</div>'))
     ))
   })
   
@@ -316,26 +272,19 @@ server <- function(input, output, session) {
     ))
   })
   
-  # ---- Folder-Based Save Option ----
-  # ---- Auto Save to Results folder ----
-  observeEvent(input$save_btn, {
-    req(summaryTable())
-    
-    # ✅ Define fixed save folder
-    save_dir <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results"
-    if (!dir.exists(save_dir)) dir.create(save_dir, recursive = TRUE)
-    
-    # ✅ Save Word file
-    save_path <- file.path(save_dir, paste0(input$save_name, ".docx"))
-    summaryTable() %>%
-      as_flex_table() %>%
-      flextable::save_as_docx(path = save_path)
-    
-    # ✅ Confirmation
-    output$save_msg <- renderText(paste("✅ File saved successfully at:\n", save_path))
-    showNotification("✅ Table saved to Results folder", type = "message")
-  })
+  # ---- Download Word File ----
+  output$download_summary <- downloadHandler(
+    filename = function() { paste0(input$save_name, ".docx") },
+    content = function(file) {
+      req(summaryTable())
+      summaryTable() %>%
+        as_flex_table() %>%
+        flextable::save_as_docx(path = file)
+    }
+  )
 }
+
+# ---- Launch App ----
 shinyApp(ui, server)
 
 

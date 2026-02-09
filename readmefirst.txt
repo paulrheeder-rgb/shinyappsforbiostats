@@ -1,3 +1,5 @@
+![AppsForBiostats Logo](https://github.com/paulrheeder-rgb/shinyappsforbiostats/blob/main/images/ShinyAppsLogo3.jpg)
+
 USING SHINY APPS FOR BIOSTATISTICS
 =================================
 
@@ -5,6 +7,7 @@ STEP 1: Install R
 https://cran.r-project.org
 
 STEP 2: Install RStudio
+
 https://posit.co/download/rstudio-desktop/
 
 STEP 3: Find zipped folder

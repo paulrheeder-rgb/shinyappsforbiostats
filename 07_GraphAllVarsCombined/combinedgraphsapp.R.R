@@ -20,6 +20,7 @@ library(forcats)
 library(DT)
 library(fs)
 library(ggpmisc)
+library(conflicted)
 
 conflicts_prefer(ggplot2::annotate)
 

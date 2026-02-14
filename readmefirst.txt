@@ -53,45 +53,15 @@ Biostats_Shiny_Apps
 
 STEP 4: Open RStudio
 
-STEP 5: Install required packages (run once)
------------------------------------------------
-install.packages(c(
-  "shiny",
-  "ggplot2",
-  "dplyr",
-  "emmeans",
-  "marginaleffects"
-))
 
-STEP 6: Run an app
+STEP 5: Open the shinyappsforbiostats folder
 ------------------
-Example (Boxplots):
+click on an app that you want to use
+it will open in the editor
+if there are packages you need to install it will show at the top of the script
+choose Run App in top menu
 
-shiny::runApp("Biostats_Shiny_Apps/08_Boxplots")
+STEP 6:  save output from App
 
-If that does not work, use the full path, e.g.:
-
-shiny::runApp(
-  "C:/Users/YOURNAME/Documents/Biostats_Shiny_Apps/08_Boxplots"
-)
-STEP 4: Open RStudio
-
-STEP 5: Install required packages (run once)
------------------------------------------------
-
-* you need to have the same packages and versions used in the Apps
-so On another machine:
-In RStudio run 
-renv::restore() → renv downloads the right versions of packages from CRAN (or other sources) using the lockfile.
-
-STEP 6: Run an app
-------------------
-Example (Boxplots):
-
-shiny::runApp("Biostats_Shiny_Apps/08_Boxplots")
-
-If that does not work, use the full path, e.g.:
-
-shiny::runApp(
-  "C:/Users/YOURNAME/Documents/Biostats_Shiny_Apps/08_Boxplots"
-)
+each App should give you an option to save output
+save in folder eg.../project/results or project/data

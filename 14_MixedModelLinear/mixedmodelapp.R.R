@@ -16,6 +16,7 @@ library(readxl)
 library(haven)
 library(officer)
 library(flextable)
+library(conflicted)
 conflicts_prefer(lmerTest::lmer)
 
 ui <- fluidPage(

@@ -16,8 +16,6 @@ library(flextable)
 library(ggplot2)
 library(cowplot)
 
-SAVE_PATH <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results"
-
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 
 ui <- fluidPage(
@@ -61,10 +59,10 @@ ui <- fluidPage(
       ),
       hr(),
       
+      # In the sidebarPanel
       h4("5. Save Results"),
-      actionButton("save", "Save Table (Word) + Plots (PNG)"),
-      verbatimTextOutput("save_msg")
-    ),
+      downloadButton("download_bundle", "Download Results (ZIP)")
+          ),
     
     mainPanel(
       tabsetPanel(
@@ -250,37 +248,37 @@ server <- function(input, output, session) {
     }
   })
   
-  # Save results — Same correct table
-  observeEvent(input$save, {
-    req(model())
-    if (!dir.exists(SAVE_PATH)) dir.create(SAVE_PATH, recursive = TRUE)
-    
-    prefix <- paste0("rms_", format(Sys.time(), "%Y%m%d_%H%M"))
-    
-    # Save coefficient table
-    tab_df <- modelsummary_rms(model())
-    
-    ft <- flextable(tab_df) %>% theme_booktabs() %>% autofit()
-    doc <- read_docx() %>% body_add_flextable(ft)
-    word_path <- file.path(SAVE_PATH, paste0(prefix, "_coefficients.docx"))
-    print(doc, target = word_path)
-    
-    # Save plots (unchanged)
-    saved_plots <- 0
-    model_formula <- deparse(formula(model()))
-    has_splines <- grepl("rcs\\(", model_formula)
-    
-    if (has_splines) {
-      dd <- dd_current()
-      options(datadist = "dd")
+  output$download_bundle <- downloadHandler(
+    filename = function() {
+      paste0("rms_results_", format(Sys.time(), "%Y%m%d_%H%M"), ".zip")
+    },
+    content = function(file) {
+      # Create a temporary directory
+      tmpdir <- tempdir()
+      prefix <- paste0("rms_", format(Sys.time(), "%Y%m%d_%H%M"))
       
-      plots_raw <- ggrmsMD(model(), data(), datadist = dd, combined = FALSE,
-                           lrm_prob = input$lrm_prob,
-                           shade_inferior = if (input$shade_higher) "higher" else "none")
+      # --- Save coefficient table as Word ---
+      tab_df <- modelsummary_rms(model())
+      ft <- flextable(tab_df) %>% theme_booktabs() %>% autofit()
+      doc <- read_docx() %>% body_add_flextable(ft)
+      word_path <- file.path(tmpdir, paste0(prefix, "_coefficients.docx"))
+      print(doc, target = word_path)
       
-      if (inherits(plots_raw, "ggplot")) plots_raw <- list(plots_raw)
+      # --- Save plots ---
+      plot_files <- c()
+      model_formula <- deparse(formula(model()))
+      has_splines <- grepl("rcs\\(", model_formula)
       
-      if (length(plots_raw) > 0) {
+      if (has_splines) {
+        dd <- dd_current()
+        options(datadist = "dd")
+        
+        plots_raw <- ggrmsMD(model(), data(), datadist = dd, combined = FALSE,
+                             lrm_prob = input$lrm_prob,
+                             shade_inferior = if (input$shade_higher) "higher" else "none")
+        
+        if (inherits(plots_raw, "ggplot")) plots_raw <- list(plots_raw)
+        
         for (i in seq_along(plots_raw)) {
           p <- plots_raw[[i]]
           if (inherits(p, "ggplot")) {
@@ -294,27 +292,19 @@ server <- function(input, output, session) {
             }
             
             p_name <- names(plots_raw)[i] %||% paste0("rcs_", i)
-            ggsave(file.path(SAVE_PATH, paste0(prefix, "_", p_name, ".png")),
-                   plot = p, width = 9, height = 6, dpi = 300)
-            saved_plots <- saved_plots + 1
+            plot_path <- file.path(tmpdir, paste0(prefix, "_", p_name, ".png"))
+            ggsave(plot_path, plot = p, width = 9, height = 6, dpi = 300)
+            plot_files <- c(plot_files, plot_path)
           }
         }
       }
+      
+      # --- Bundle into ZIP ---
+      files_to_zip <- c(word_path, plot_files)
+      zip(file, files = files_to_zip, flags = "-j")  # -j strips paths
     }
-    
-    plot_msg <- if (saved_plots > 0) {
-      paste(saved_plots, "plot(s) saved.")
-    } else {
-      "No plots saved (no spline terms in model)."
-    }
-    
-    output$save_msg <- renderText({
-      paste("Outputs saved successfully!\n",
-            "• Table: ", basename(word_path), "\n",
-            "• ", plot_msg, "\n",
-            "Folder: ", SAVE_PATH)
-    })
-  })
+  )
+  
 }
 
 shinyApp(ui, server)

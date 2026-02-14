@@ -8,6 +8,7 @@ library(dplyr)
 library(writexl)
 library(DT)
 library(forcats)
+library(conflicted)
 conflicted::conflicts_prefer(dplyr::filter)
 # ---- UI ----
 ui <- fluidPage(

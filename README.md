@@ -1,4 +1,4 @@
-![AppsForBiostats Logo](https://github.com/paulrheeder-rgb/shinyappsforbiostats/blob/main/images/ShinyAppsLogo3.jpg)
+![AppsForBiostats Logo](https://github.com/paulrheeder-rgb/shinyappsforbiostats/blob/main/images/image%20(2).png)
 
 USING SHINY APPS FOR BIOSTATISTICS
 =================================

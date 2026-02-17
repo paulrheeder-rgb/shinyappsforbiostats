@@ -7,6 +7,7 @@ library(dplyr)
 library(stringr)
 library(DT)
 library(forcats)
+library(conflicted)
 conflicts_prefer(dplyr::filter)
 
 ui <- fluidPage(
@@ -90,8 +91,7 @@ ui <- fluidPage(
 
   server <- function(input, output, session) {
   dataset <- reactiveVal(NULL)
-  save_folder <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/data"
-  
+ 
   # Update environment dataset choices
   observe({
     updateSelectInput(session, "env_dataset", choices = ls(envir = .GlobalEnv))
@@ -391,7 +391,7 @@ ui <- fluidPage(
   # Preview
   output$preview <- renderDT({
     req(dataset())
-    datatable(head(dataset(), 1000), options = list(scrollX = TRUE, pageLength = 10))
+    datatable(head(dataset(), 1000), options = list(scrollX = TRUE, pageLength = 5))
   })
   
   # Var summary

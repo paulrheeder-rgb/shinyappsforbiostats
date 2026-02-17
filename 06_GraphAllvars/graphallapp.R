@@ -1,6 +1,4 @@
-# App 5 Graphs All
-# Load libraries
-
+# App 5 Graphs All - Cleaned for browser download
 library(shiny)
 library(haven)
 library(ggplot2)
@@ -8,8 +6,6 @@ library(dplyr)
 library(gridExtra)
 library(rlang)
 library(officer)
-library(rvg)
-library(shinyFiles)
 
 ui <- fluidPage(
   titlePanel("Variable Explorer: Numeric & Categorical Plots"),
@@ -23,7 +19,8 @@ ui <- fluidPage(
       
       conditionalPanel(
         condition = "input.data_source == 'upload'",
-        fileInput("file", "Upload Excel or Stata or RData", accept =  c(".RData", ".rds", ".xlsx", ".xls", ".dta")),
+        fileInput("file", "Upload Excel or Stata or RData", 
+                  accept = c(".RData", ".rds", ".xlsx", ".xls", ".dta"))
       ),
       
       conditionalPanel(
@@ -38,12 +35,9 @@ ui <- fluidPage(
                    choices = c("Count" = "count", "Percent" = "percent")),
       
       actionButton("plot_btn", "Generate Plots"),
-      
       hr(),
       textInput("save_name", "Word file name (without extension)", value = "All_Plots"),
-      shinyDirButton("save_dir", "Select save folder", "Choose a folder"),
-      actionButton("save_plots", "Save All Plots to Selected Folder"),
-      textOutput("save_msg")
+      downloadButton("download_docx", "Download Word File", class = "btn-success")
     ),
     
     mainPanel(
@@ -178,49 +172,40 @@ server <- function(input, output, session) {
     })
   })
   
-  # ---- Folder-based save ----
-  roots <- c(
-    Home = normalizePath("~"),
-    Results = "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results"
+  # ---- Download Word file ----
+  output$download_docx <- downloadHandler(
+    filename = function() {
+      paste0(input$save_name, ".docx")
+    },
+    content = function(file) {
+      req(df())
+      
+      plots <- list()
+      if (!is.null(input$numeric_vars)) {
+        for (var in input$numeric_vars) {
+          panels <- make_normality_panels(df(), var)
+          plots <- c(plots, panels)
+        }
+      }
+      if (!is.null(input$factor_vars)) {
+        for (var in input$factor_vars) {
+          bar <- make_bar_plot(df(), var, input$cat_plot_type)
+          plots <- c(plots, list(bar))
+        }
+      }
+      
+      doc <- officer::read_docx()
+      for (i in seq_along(plots)) {
+        doc <- doc %>%
+          body_add_par(paste("Plot", i), style = "heading 2") %>%
+          body_add_gg(plots[[i]], style = "centered")
+      }
+      
+      print(doc, target = file)
+    }
   )
-  shinyDirChoose(input, "save_dir", roots = roots, session = session)
-  
-  observeEvent(input$save_plots, {
-    req(df())
-    
-    dir <- parseDirPath(roots, input$save_dir)
-    if (length(dir) == 0) {
-      output$save_msg <- renderText("⚠️ Please select a save folder first.")
-      return()
-    }
-    
-    plots <- list()
-    if (!is.null(input$numeric_vars)) {
-      for (var in input$numeric_vars) {
-        panels <- make_normality_panels(df(), var)
-        plots <- c(plots, panels)
-      }
-    }
-    if (!is.null(input$factor_vars)) {
-      for (var in input$factor_vars) {
-        bar <- make_bar_plot(df(), var, input$cat_plot_type)
-        plots <- c(plots, list(bar))
-      }
-    }
-    
-    doc <- officer::read_docx()
-    for (i in seq_along(plots)) {
-      doc <- doc %>%
-        body_add_par(paste("Plot", i), style = "heading 2") %>%
-        body_add_gg(plots[[i]], style = "centered")
-    }
-    
-    save_path <- file.path(dir, paste0(input$save_name, ".docx"))
-    print(doc, target = save_path)
-    
-    output$save_msg <- renderText(paste("✅ All plots saved successfully at:", save_path))
-  })
 }
 
 shinyApp(ui, server)
+
 

@@ -13,8 +13,9 @@ library(officer)
 library(flextable)
 library(dplyr)
 library(ggplot2)
+library(conflicted)
+conflicts_prefer(zip::zip)
 
-SAVE_PATH <- "G:/My Drive/Paul/Box/scripts/workinginR/workinginR3/Results"
 
 # =========================
 # UI
@@ -58,9 +59,8 @@ ui <- fluidPage(
       
       textInput("tbl_title", "Regression table title:", value = "Regression Results")
       ,
-      h4("3. Save Results"),
-      actionButton("save", "Save Table (Word)"),
-      verbatimTextOutput("save_msg")
+      downloadButton("download_bundle", "Download Results (ZIP)")
+      
     ),
     
     mainPanel(
@@ -312,25 +312,81 @@ server <- function(input, output, session) {
     tbl_gt
   })
   
+  # save to folder
   
-  # =========================
-  # Save Word
-  # =========================
-  observeEvent(input$save, {
-    req(pooled_tbl())
-    
-    if (!dir.exists(SAVE_PATH))
-      dir.create(SAVE_PATH, recursive = TRUE)
-    
-    file <- file.path(
-      SAVE_PATH,
-      paste0("mi_results_", format(Sys.time(), "%Y%m%d_%H%M"), ".docx")
-    )
-    
-    pooled_tbl() |> as_flex_table() |> save_as_docx(path = file)
-    
-    output$save_msg <- renderText(paste("Saved to:", file))
-  })
+  output$download_bundle <- downloadHandler(
+    filename = function() {
+      paste0("results_", format(Sys.time(), "%Y%m%d_%H%M"), ".zip")
+    },
+    content = function(file) {
+      req(pooled_tbl())   # make sure results exist
+      
+      tmpdir <- tempdir()
+      prefix <- paste0("results_", format(Sys.time(), "%Y%m%d_%H%M"))
+      
+      # --- Save regression table as Word ---
+      tbl <- pooled_tbl()
+      ft <- as_flex_table(tbl) %>% theme_booktabs() %>% autofit()
+      doc <- read_docx() %>% body_add_flextable(ft)
+      word_path <- file.path(tmpdir, paste0(prefix, "_results.docx"))
+      print(doc, target = word_path)
+      
+      # --- Save plot (only if inspect mode was used) ---
+      plot_files <- c()
+      if (input$analysis_type == "inspect" && !is.null(input$inspect_var)) {
+        # Recreate the plot
+        imp <- mids_obj()
+        var <- input$inspect_var
+        n <- nrow(imp$data)
+        
+        plot_df <- data.frame(
+          row = 1:n,
+          value = imp$data[[var]],
+          type = "observed"
+        )
+        
+        if (var %in% names(imp$imp)) {
+          imps_list <- imp$imp[[var]]
+          for (i in seq_along(imps_list)) {
+            vals <- imps_list[[i]]
+            missing_rows <- which(is.na(imp$data[[var]]))
+            if (length(vals) != length(missing_rows)) next
+            plot_df <- rbind(
+              plot_df,
+              data.frame(
+                row = missing_rows,
+                value = vals,
+                type = paste0("imputation_", i)
+              )
+            )
+          }
+        }
+        
+        type_levels <- unique(plot_df$type)
+        colors <- c("observed" = "black",
+                    setNames(rainbow(length(type_levels)-1),
+                             type_levels[type_levels != "observed"]))
+        
+        p <- ggplot(plot_df, aes(x = row, y = value, color = type)) +
+          geom_jitter(width = 0.2, height = 0, alpha = 0.8, size = 2) +
+          scale_color_manual(values = colors) +
+          labs(title = paste("Inspect variable:", var),
+               x = "Row index", y = var, color = "Value type") +
+          theme_minimal()
+        
+        plot_path <- file.path(tmpdir, paste0(prefix, "_inspect_plot.png"))
+        ggsave(plot_path, plot = p, width = 9, height = 6, dpi = 300)
+        plot_files <- c(plot_files, plot_path)
+      }
+      
+      # --- Bundle into ZIP ---
+      files_to_zip <- c(word_path, plot_files)
+      zip::zip(zipfile = file, files = files_to_zip, mode = "cherry-pick")
+      
+    }
+  )
+  
+  
   
 }
 

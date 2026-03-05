@@ -53,7 +53,7 @@ interpret_effect <- function(factor, ame, pval, model_type) {
 }
 
 ui <- fluidPage(
-  titlePanel("Regression Dashboard with DFBETAs Option"),
+  titlePanel("Regression Dashboard"),
   
   sidebarLayout(
     sidebarPanel(
@@ -146,12 +146,7 @@ ui <- fluidPage(
                  )
         ),
         tabPanel("ROC Curve", plotOutput("roc_plot")),
-        tabPanel("Marginal Effects", plotOutput("margins_plot")),
-        tabPanel("Marginal Effects Table",
-                 tableOutput("margins_table"),
-                 uiOutput("margins_text")
-        ),
-        tabPanel("Interaction Plot",
+               tabPanel("Interaction Plot",
                  h4("Visualization of Specified Interaction"),
                  p("Shows the first interaction term entered in the sidebar."),
                  br(),
@@ -163,7 +158,7 @@ ui <- fluidPage(
     )
   )
 )
-
+  
 server <- function(input, output, session) {
   # Environment dataset dropdown
   dfs <- ls(envir = .GlobalEnv)
@@ -563,227 +558,8 @@ server <- function(input, output, session) {
     v <- strsplit(inter[1], ":")[[1]]
     is_factor <- sapply(v, function(x) is.factor(fit$model[[x]]))
     is_numeric <- sapply(v, function(x) is.numeric(fit$model[[x]]))
-    
-    if (all(is_factor)) {
-      radioButtons(
-        "catcat_estimand",
-        "Categorical × Categorical output",
-        choices = c(
-          "Cell means" = "means",
-          "Pairwise contrasts" = "contrasts"
-        ),
-        inline = TRUE
-      )
-    } else if (sum(is_factor) == 1 && sum(is_numeric) == 1) {
-      radioButtons(
-        "catcont_estimand",
-        "Categorical × Continuous output",
-        choices = c(
-          "Slopes (marginal effects)" = "slopes",
-          "Compare slopes between groups" = "comparisons"
-        ),
-        inline = TRUE
-      )
-    }
-  })
+      })
   
-  # ---- Marginal Effects Table (patched) ----
-  # Marginal Effects – works for lm and glm
-  output$margins_plot <- renderPlot({
-    req(model_fit())
-    fit <- model_fit()
-    m <- tryCatch(margins(fit, data = fit$model), error = function(e) NULL)
-    
-    if (!is.null(m)) {
-      plot(m)
-      title(main = "Average Marginal Effects")
-    } else {
-      plot.new()
-      text(0.5, 0.5, "No marginal effects available.", cex = 1.3, col = "red")
-    }
-  })
-  
-  # margins table
-  output$margins_table <- renderTable({
-    
-    req(model_fit())
-    fit <- model_fit()
-    
-    # 🔒 Force reactivity to model structure
-    isolate({
-      formula(fit)
-    })
-    
-    # 🔥 Always start clean
-    df <- NULL
-    
-    
-    vars_in_model <- attr(terms(fit), "term.labels")
-    interaction_terms <- grep(":", vars_in_model, value = TRUE)
-    
-   
-    if (length(interaction_terms) > 0) {
-      
-      inter <- interaction_terms[1]
-      vars  <- strsplit(inter, ":")[[1]]
-      
-      is_factor <- sapply(vars, function(v) is.factor(fit$model[[v]]))
-      is_numeric <- sapply(vars, function(v) is.numeric(fit$model[[v]]))
-      
-      # --------------------------------------------------
-      # 1️⃣ Categorical × Categorical
-      # --------------------------------------------------
-      if (all(is_factor)) {
-        
-        choice <- input$catcat_estimand %||% "means"
-        
-        emm <- emmeans::emmeans(
-          fit,
-          as.formula(paste("~", vars[1], "*", vars[2]))
-        )
-        
-        if (choice == "contrasts") {
-          
-          df <- emmeans::contrast(
-            emm,
-            method = "pairwise"
-          ) |>
-            summary(infer = TRUE) |>
-            as.data.frame()
-          
-          df$Type <- "Pairwise contrasts (Cat × Cat)"
-          
-        } else {
-          
-          df <- summary(emm, infer = TRUE) |>
-            as.data.frame()
-          
-          df$Type <- "Estimated marginal means (cell means)"
-        }
-        
-        # --------------------------------------------------
-        # 2️⃣ Categorical × Continuous
-        # --------------------------------------------------
-      } else if (sum(is_factor) == 1 && sum(is_numeric) == 1) {
-        
-        cont_var <- vars[is_numeric]
-        cat_var  <- vars[is_factor]
-        
-        choice <- input$catcont_estimand %||% "slopes"
-        
-        if (choice == "comparisons") {
-          
-          tr <- emmeans::emtrends(
-            fit,
-            specs = as.formula(paste("~", cat_var)),
-            var = cont_var
-          )
-          
-          df <- emmeans::contrast(
-            tr,
-            method = "pairwise"
-          ) |>
-            summary(infer = TRUE) |>
-            as.data.frame()
-          
-          df$Type <- "Slope comparisons (Cat × Cont)"
-          
-        } else {
-          
-          df <- marginaleffects::slopes(
-            fit,
-            variables = cont_var,
-            by = cat_var
-          ) |>
-            as.data.frame()
-          
-          df$Type <- "Marginal slopes by group (Cat × Cont)"
-        }
-        
-        # --------------------------------------------------
-        # 3️⃣ Continuous × Continuous
-        # --------------------------------------------------
-      } else if (all(is_numeric)) {
-        
-        df <- marginaleffects::slopes(
-          fit,
-          variables = vars
-        ) |>
-          as.data.frame()
-        
-        df$Type <- "Marginal effects (Cont × Cont)"
-      }
-    }
-    
- 
-
-    # --------------------------------------------------
-    # 4️⃣ No interaction → AMEs for continuous + factors
-    # --------------------------------------------------
-    if (length(interaction_terms) == 0) {
-      
-      outcome <- all.vars(formula(fit))[1]
-      
-      num_vars <- names(fit$model)[
-        sapply(fit$model, is.numeric)
-      ]
-      num_vars <- setdiff(num_vars, outcome)
-      
-      fac_vars <- names(fit$model)[
-        sapply(fit$model, is.factor)
-      ]
-      
-      dfs <- list()
-      
-      # ---- Continuous predictors ----
-      if (length(num_vars) > 0) {
-        dfs[["continuous"]] <-
-          marginaleffects::avg_slopes(
-            fit,
-            variables = num_vars
-          ) |>
-          as.data.frame()
-      }
-      
-      # ---- Factor predictors ----
-      if (length(fac_vars) > 0) {
-        dfs[["factors"]] <-
-          marginaleffects::avg_comparisons(
-            fit,
-            variables = fac_vars
-          ) |>
-          as.data.frame()
-      }
-      
-      if (length(dfs) == 0) {
-        return(data.frame(Message = "No marginal effects available."))
-      }
-      
-      df <- dplyr::bind_rows(dfs)
-      
-      df$Type <- "Average marginal effects (main effects)"
-    }
-    
-    
-    # --------------------------------------------------
-    # 🔧 Normalize columns
-    # --------------------------------------------------
-    if ("estimate" %in% names(df)) df$AME <- df$estimate
-    if ("emmean" %in% names(df))   df$AME <- df$emmean
-    if ("p.value" %in% names(df))  df$p   <- df$p.value
-    
-    # --------------------------------------------------
-    # 🧠 Interpretation
-    # --------------------------------------------------
-    df$Interpretation <- paste0(
-      "Estimate = ",
-      ifelse(!is.na(df$AME), round(df$AME, 3), "NA"),
-      ", p = ",
-      ifelse(!is.na(df$p), signif(df$p, 3), "NA")
-    )
-    
-    df
-  })
   
   # Interaction Plot
   output$interaction_plot <- renderPlot({

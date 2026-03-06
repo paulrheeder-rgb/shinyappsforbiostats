@@ -545,23 +545,7 @@ server <- function(input, output, session) {
     plot(roc_obj, print.auc = TRUE, main = "ROC Curve")
   })
   
-  
-  output$interaction_options <- renderUI({
-    req(model_fit())
-    
-    fit <- model_fit()
-    vars <- attr(terms(fit), "term.labels")
-    inter <- grep(":", vars, value = TRUE)
-    
-    if (length(inter) == 0) return(NULL)
-    
-    v <- strsplit(inter[1], ":")[[1]]
-    is_factor <- sapply(v, function(x) is.factor(fit$model[[x]]))
-    is_numeric <- sapply(v, function(x) is.numeric(fit$model[[x]]))
-      })
-  
-  
-  # Interaction Plot
+    # Interaction Plot
   output$interaction_plot <- renderPlot({
     req(model_fit())
     fit <- model_fit()

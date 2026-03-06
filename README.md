@@ -37,9 +37,10 @@ Right-click the ZIP file
 → choose “Extract All…”
 → click Extract
 
-Move the extracted folder to: the folder of choice for you apps
+ Extract to Documents on your PC (or any other folder)
+ Not to Documents/shinyapps............... just Documents/
 
- eg in Documents/ rather in a drive eg google drive so you can access anywhere
+or in a drive eg google drive so you can access anywhere
 
 You should now have:
 
@@ -56,14 +57,18 @@ shinyappsforbiostats-main
 
 Rename it to:
 
-Biostats_Shiny_Apps
+shinyappsforbiostats
 
 STEP 5: Open RStudio
 ------------------
-
+ choose  file>>>>Open Project>>>>> go to the shinyappsforbiostats   folder
+ click on the shinyappsfor biostats project file
+ 
+ This project will now open in RStudio and in the Right pane under files you will see all the Apps
+ 
 STEP 6: Open an app
 ------------------
-Open the folder in the project you need and click on app.R
+Open the folder and click on app.R
 The is app will appear as a script file
 At the top of the file it will say which libraries you need to install
 

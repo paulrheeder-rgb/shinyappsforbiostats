@@ -5,6 +5,26 @@
 USING SHINY APPS FOR BIOSTATISTICS
 =================================
 
+Data analysis always has several steps: import data, fix format and clean names and white spaces, 
+fix data types (such as factors with levels), check missing values, check and manage extreme values, do 
+exploratory graphs and descriptive statistics, create tables, more box and scatter plots and finally 
+regresion analysis.
+
+Here we have an App for each of these steps.
+1. DataDictionary: merge data with a dictionary file 
+2. PostImport: open file and fix data format and names, choose data types
+3. DplyrEdit: do data manipulation with Dplyr
+4. Table1AllStats: look at/explore the data 
+5. Table1or2: make nice tables, single or more groups
+6. GraphAllvars: graph the numerical and categorical variables
+7. GraphAllVarsComined: graph numerical and categorical variables, basic box and scatterplots
+8. Boxplots
+9. Scatterplots
+10. Regression: linear and logistic regression, test assumptions, show detail such as 
+goodness of fit and calibration, show plots.
+
+How to get started:
+
 STEP 1: Install R
 https://cran.r-project.org
 ------------------

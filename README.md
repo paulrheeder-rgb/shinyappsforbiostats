@@ -23,6 +23,8 @@ Here we have an App for each of these steps.
 10. Regression: linear and logistic regression, test assumptions, show detail such as 
 goodness of fit and calibration, show plots.
 
+These Apps were developed with the help of Copilot and ChatGPT.
+
 How to get started:
 
 STEP 1: Install R

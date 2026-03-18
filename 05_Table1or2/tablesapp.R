@@ -168,9 +168,9 @@ server <- function(input, output, session) {
     
     # subset while preserving labels
     df_use <- if (!is.null(by_var)) {
-      df %>% select(all_of(c(selected_vars, by_var)))
+      df %>% select(any_of(c(selected_vars, by_var)))
     } else {
-      df %>% select(all_of(selected_vars))
+      df %>% select(any_of(selected_vars))
     }
     
     # reattach labels from original df

@@ -103,7 +103,7 @@ server <- function(input, output, session) {
     op <- input$operation
     
     switch(op,
-           "Select Columns" = checkboxGroupInput("sel_cols", "Select columns:", choices = cols, selected = cols),
+           "Select Columns" = checkboxGroupInput("sel_cols", "Select columns:", choices = cols, selected = NULL),
            "Rename Columns" = fluidRow(
              column(6, selectInput("rename_from", "Rename from:", choices = cols)),
              column(6, textInput("rename_to", "New name:"))
